@@ -419,7 +419,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() == 1 {
-        tracing::error!("Need args daemon or get <LIBLRC_ID>");
+        tracing::error!("Need args daemon or get <LRCLIB_ID>");
         return Ok(());
     }
 
@@ -427,7 +427,7 @@ async fn main() -> Result<()> {
         "daemon" => daemon(1000).await,
         "get" => {
             if args.len() == 2 {
-                tracing::error!("Need args for get. get <LIBLRC_ID>");
+                tracing::error!("Need args for get. get <LRCLIB_ID>");
                 return Ok(());
             }
             let id: u64 = args.get(2).unwrap().parse()?;
