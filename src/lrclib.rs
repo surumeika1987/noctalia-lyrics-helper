@@ -150,4 +150,51 @@ impl LRCLIBAPI {
 
         return Ok(lyrics);
     }
+
+    pub async fn search_lyrics(query: String) -> Result<Vec<LRCLIBResponse>, LRCLIBError> {
+        let url = format!("{}/api/search?q={}", LRCLIB_URL, query);
+        tracing::info!("Get: {}", url);
+
+        let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+        let response = client.get(url).send().await?;
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            tracing::info!("Too Many Request.");
+            return Err(LRCLIBError::TooManyRequest());
+        }
+
+        if status != reqwest::StatusCode::OK {
+            tracing::info!("Response Not OK. code: {}", status.as_str());
+            return Err(LRCLIBError::ResponseNotOK(status));
+        }
+
+        let json: serde_json::Value = response.json().await?;
+
+        let mut response_array: Vec<LRCLIBResponse> = Vec::new();
+        if let Some(array) = json.as_array() {
+            for lyrics_raw in array {
+                let lyrics = LRCLIBResponse {
+                    id: lyrics_raw["id"].as_u64().unwrap(),
+                    name: lyrics_raw["name"].as_str().unwrap().to_string(),
+                    track_name: lyrics_raw["trackName"].as_str().unwrap().to_string(),
+                    artist_name: lyrics_raw["artistName"].as_str().unwrap().to_string(),
+                    album_name: lyrics_raw["albumName"].as_str().unwrap().to_string(),
+                    duration: lyrics_raw["duration"].as_f64().unwrap() as u64,
+                    instrumental: lyrics_raw["instrumental"].as_bool().unwrap(),
+                    plain_lyrics: lyrics_raw["plainLyrics"]
+                        .as_str()
+                        .map(|lyrics| lyrics.lines().map(str::to_string).collect())
+                        .unwrap_or_default(),
+                    syncd_lyrics: lyrics_raw["syncedLyrics"]
+                        .as_str()
+                        .map(|lyrics| lyrics.lines().map(str::to_string).collect()),
+                    lyricsfile: lyrics_raw["lyricsfile"].as_str().unwrap().to_string(),
+                };
+                response_array.push(lyrics);
+            }
+        }
+
+        return Ok(response_array);
+    }
 }

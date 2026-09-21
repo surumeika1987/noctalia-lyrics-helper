@@ -199,9 +199,70 @@ async fn get_lyrics_lrclib(
 
                 return Some(lyrics);
             }
-            None
+            fallback(title, artist, length).await
         }
-        Err(err) => None,
+        Err(_) => fallback(title, artist, length).await,
+    }
+}
+
+async fn fallback(title: String, artist: String, length: Option<u64>) -> Option<Vec<Lyric>> {
+    let song_key = format!("{} - {}", artist, title);
+    let song_key_hash = hex::encode(Md5::digest(song_key.as_bytes()));
+
+    let cache_lyric_file_path = CACHE_DIR.join(format!("{}.json", song_key_hash));
+    let cache_lyric_db_file_path = CACHE_DIR.join("db.cvs");
+    // Fallback to search
+    tracing::info!("Fallback to search");
+    let responses = LRCLIBAPI::search_lyrics(title).await;
+    match responses {
+        Ok(ress) => {
+            let mut select_lyrics_index: Option<usize> = None;
+            if let Some(length) = length {
+                let mut diff_time: u64 = u64::MAX;
+                for (index, res) in ress.iter().enumerate() {
+                    let diff: u64 = (((res.duration * 1000) - length) as i64).abs() as u64;
+                    if diff < diff_time {
+                        select_lyrics_index = Some(index);
+                        diff_time = diff;
+                    }
+                }
+            } else {
+                if ress.len() != 0 {
+                    select_lyrics_index = Some(0);
+                }
+            }
+
+            if let Some(select_lyrics_index) = select_lyrics_index {
+                if let Some(ref syncd_lrc_text) =
+                    ress.get(select_lyrics_index).unwrap().syncd_lyrics
+                {
+                    let lyrics = parse_lrc(
+                        syncd_lrc_text
+                            .iter()
+                            .map(|v| v.as_str())
+                            .collect::<Vec<&str>>(),
+                    );
+
+                    tracing::info!("Save file to {}", cache_lyric_file_path.to_string_lossy());
+                    let json = serde_json::to_string(&lyrics).unwrap();
+                    std::fs::write(cache_lyric_file_path, json).unwrap();
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(cache_lyric_db_file_path)
+                        .unwrap();
+
+                    writeln!(file, "{},{}", song_key_hash, song_key);
+
+                    return Some(lyrics);
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
     }
 }
 
