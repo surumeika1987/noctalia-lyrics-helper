@@ -1,8 +1,8 @@
 # Helper script for Noctalia lyric plugins
 ## 概要
-再生されてる音楽を取得しプラグインに歌詞データを渡します
-再生音楽の取得には`playerctl`を使用しています
-`LRCLIB`から歌詞を取得しています
+再生されてる音楽を取得しプラグインに歌詞データを渡します  
+再生音楽の取得には`playerctl`を使用しています  
+`LRCLIB`から歌詞を取得しています  
 ## 要件
 以下のNoctalia pluginsに対応しています
 - [lyrics](https://noctalia.dev/plugins/community/lyrics)
