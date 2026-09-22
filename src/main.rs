@@ -58,6 +58,8 @@ async fn daemon(adjust_ms: u64) -> Result<()> {
     let mut lyrics_dict: HashMap<String, Option<Vec<Lyric>>> = HashMap::new();
     let mut prev_song_key = String::new();
 
+    cache::init_cache_dir();
+
     loop {
         let mpris = mpris::get_player_status().await?;
         let Some(mpris) = mpris else {

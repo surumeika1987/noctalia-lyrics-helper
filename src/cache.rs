@@ -4,7 +4,7 @@
 //! `get_lyrics_lrclib` / `fallback` / `get_lyrics_lrclib_id` の3箇所に
 //! ほぼ同一のまま重複していたため、`save_lyrics` として1箇所にまとめた。
 
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -19,6 +19,27 @@ pub static CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
         .expect("Failed to get home directory")
         .join(".cache/noctalia/lyrics")
 });
+
+pub fn init_cache_dir() {
+    if !CACHE_DIR.is_dir() {
+        if CACHE_DIR.is_file() {
+            tracing::error!("CACHE_DIR is file! This must folder!");
+            panic!("CACHE_DIR is file! This must folder!");
+        }
+        fs::create_dir_all(CACHE_DIR.to_path_buf()).unwrap();
+    }
+
+    if !db_path().is_file() {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(db_path())
+            .unwrap();
+
+        // db.cvsへの追記失敗は元コードと同様に無視する（副次的な記録用ファイルのため）
+        let _ = writeln!(file, "hash,id,song_key");
+    }
+}
 
 /// アーティスト名と曲名から、曲を一意に識別する文字列キーを生成する
 pub fn song_key(artist: &str, title: &str) -> String {
@@ -43,7 +64,7 @@ fn db_path() -> PathBuf {
 /// 取得した歌詞をキャッシュJSONへ書き込み、DBファイルに追記する。
 ///
 /// （元コードで3箇所に重複していた「キャッシュ保存＋DB追記」を集約したもの）
-pub fn save_lyrics(song_key_hash: &str, song_key: &str, lyrics: &[Lyric]) {
+pub fn save_lyrics(song_key_hash: &str, id: u64, song_key: &str, lyrics: &[Lyric]) {
     let cache_lyric_file_path = lyric_cache_path(song_key_hash);
 
     tracing::info!("Save file to {}", cache_lyric_file_path.to_string_lossy());
@@ -57,7 +78,7 @@ pub fn save_lyrics(song_key_hash: &str, song_key: &str, lyrics: &[Lyric]) {
         .unwrap();
 
     // db.cvsへの追記失敗は元コードと同様に無視する（副次的な記録用ファイルのため）
-    let _ = writeln!(file, "{},{}", song_key_hash, song_key);
+    let _ = writeln!(file, "{},{},{}", song_key_hash, id, song_key);
 }
 
 /// ローカルキャッシュに保存済みの歌詞を読み込む（存在しなければ`None`）

@@ -68,7 +68,11 @@ pub fn build_lyrics_model(lyrics: &[Lyric], length: u64) -> NoctaliaLyricsModelR
                 Some(next_lyric) => next_lyric.time - v.time,
                 None => length - v.time,
             }),
-            text: v.text.clone(),
+            text: if v.text.is_empty() {
+                String::from("...")
+            } else {
+                v.text.clone()
+            },
             translation: None,
             romanization: None,
             chars: None,

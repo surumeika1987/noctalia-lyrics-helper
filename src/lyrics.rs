@@ -100,7 +100,7 @@ fn parse_and_cache(
             .map(|v| v.as_str())
             .collect::<Vec<&str>>(),
     );
-    cache::save_lyrics(song_key_hash, song_key, &lyrics);
+    cache::save_lyrics(song_key_hash, res.id, song_key, &lyrics);
     Some(lyrics)
 }
 
@@ -138,7 +138,8 @@ pub async fn get_lyrics_lrclib(
     }
 }
 
-/// LRCLIBの検索APIで曲名の候補を探し、指定された長さに最も近いものを採用するフォールバック処理。
+/// LRCLIBの検索APIで曲名の候補を探し
+/// 指定された長さに最も近い同期歌詞があるものを採用するフォールバック処理。
 pub async fn fallback(title: String, artist: String, length: Option<u64>) -> Option<Vec<Lyric>> {
     let key = cache::song_key(&artist, &title);
     let hash = cache::song_key_hash(&key);
@@ -148,8 +149,12 @@ pub async fn fallback(title: String, artist: String, length: Option<u64>) -> Opt
 
     match responses {
         Ok(ress) => {
-            let select_lyrics_index = select_best_match(&ress, length)?;
-            let res = ress.get(select_lyrics_index).unwrap();
+            let filtered_ress: Vec<LRCLIBResponse> = ress
+                .into_iter()
+                .filter(|v| v.syncd_lyrics != None)
+                .collect();
+            let select_lyrics_index = select_best_match(&filtered_ress, length)?;
+            let res = filtered_ress.get(select_lyrics_index).unwrap();
             parse_and_cache(res, &hash, &key)
         }
         Err(_) => None,
