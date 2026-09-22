@@ -21,6 +21,11 @@ pub struct MPRISData {
     pub art_url: String,
 }
 
+/// メタデータの各フィールドを区切るのに使う文字。
+/// タイトルやアーティスト名に出現する可能性が実質無い制御文字(Unit Separator, U+001F)を使うことで、
+/// JSON文字列を手動組み立てしてパースする方式（"や\を含むタイトルで壊れる）を避けている。
+const FIELD_SEPARATOR: &str = "\u{1f}";
+
 /// 現在アクティブなプレイヤーの再生状態を取得する。
 /// 複数のプレイヤーが動作している場合はYoutubeMusicを優先し、無ければ先頭のプレイヤーを使う。
 /// プレイヤーが1つも見つからない場合は`Ok(None)`を返す。
@@ -45,31 +50,50 @@ pub async fn get_player_status() -> Result<Option<MPRISData>> {
         return Ok(None);
     }
 
+    // タイトルやアーティスト名に " や \ が含まれていても壊れないよう、
+    // JSON形式ではなく制御文字区切りでフィールドをそのまま取り出す
+    let format = [
+        "{{status}}",
+        "{{position}}",
+        "{{title}}",
+        "{{artist}}",
+        "{{mpris:length}}",
+        "{{mpris:artUrl}}",
+    ]
+    .join(FIELD_SEPARATOR);
+
     let output = Command::new("playerctl")
         .args([
             "-p",
             player.unwrap().as_str(),
             "metadata",
             "--format",
-            "{\"status\": \"{{status}}\",\"position\":{{position}},\"title\":\"{{title}}\",\"artist\":\"{{artist}}\",\"length\":{{mpris:length}},\"art_url\":\"{{mpris:artUrl}}\"}",
+            &format,
         ])
         .output()
         .await
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout)?;
-    let status = if json["status"] == "Playing" {
+    let mut fields = stdout.trim_end_matches('\n').split(FIELD_SEPARATOR);
+
+    let status = if fields.next().unwrap_or_default() == "Playing" {
         MPRISStatus::Playing
     } else {
         MPRISStatus::Paused
     };
+    let position: u64 = fields.next().unwrap_or_default().parse().unwrap_or(0);
+    let title = fields.next().unwrap_or_default().to_string();
+    let artist = fields.next().unwrap_or_default().to_string();
+    let length: u64 = fields.next().unwrap_or_default().parse().unwrap_or(0);
+    let art_url = fields.next().unwrap_or_default().to_string();
+
     let mpris = MPRISData {
         status,
-        position: json["position"].as_u64().unwrap() / 1000,
-        title: json["title"].as_str().unwrap().to_string(),
-        artist: json["artist"].as_str().unwrap().to_string(),
-        length: json["length"].as_u64().unwrap() / 1000,
-        art_url: json["art_url"].as_str().unwrap().to_string(),
+        position: position / 1000,
+        title,
+        artist,
+        length: length / 1000,
+        art_url,
     };
     Ok(Some(mpris))
 }

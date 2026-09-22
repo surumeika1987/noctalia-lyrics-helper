@@ -17,42 +17,71 @@ pub struct Lyric {
     pub text: String,
 }
 
-/// LRC形式（例: `[01:23.45]テキスト`）の行群を、時刻付き歌詞のリストへ変換する。
-pub fn parse_lrc(lrc_text: Vec<&str>) -> Vec<Lyric> {
-    let mut parsed: Vec<Lyric> = Vec::new();
-
-    for line in lrc_text {
-        let parts: Vec<&str> = line.split("]").collect();
-        let time_part = parts.get(0).unwrap().replace("[", "");
-        let text = line
-            .strip_prefix(&format!("[{}]", time_part))
-            .unwrap_or(line)
-            .trim()
-            .to_string();
-
-        // "分:秒" または "分:秒.百分の一秒" の形式から時刻を分離する
-        let (min_sec, hund) = if time_part.contains(".") {
-            let time_parts: Vec<&str> = time_part.split(".").collect();
-            let hund_str = *time_parts.get(1).unwrap();
-            let hund: u64 = if hund_str.len() == 2 {
-                hund_str.parse::<u64>().unwrap() * 10
-            } else {
-                hund_str.parse::<u64>().unwrap()
-            };
-            (*time_parts.get(0).unwrap(), hund)
-        } else {
-            (time_part.as_str(), 0)
-        };
-
-        let min_sec_parts: Vec<&str> = min_sec.split(":").collect();
-        let minutes = (*min_sec_parts.get(0).unwrap()).parse::<u64>().unwrap();
-        let seconds = (*min_sec_parts.get(1).unwrap()).parse::<u64>().unwrap();
-        let time = ((minutes * 60) + seconds) * 1000 + hund;
-
-        parsed.push(Lyric { text, time });
+/// 1行をタイムスタンプ付き歌詞としてパースする。
+/// メタデータ行（`[ar:...]` `[ti:...]` など）、空行、壊れた行は`None`を返してスキップ対象とする。
+///
+/// 正規表現は使わず、`split_once`/`strip_prefix`/`parse`のみで判定する。
+/// タイムスタンプ行は`[`の直後が必ず数字、メタデータ行は英字始まりという
+/// LRC形式の性質を利用して区別している。
+fn parse_lrc_line(line: &str) -> Option<Lyric> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
     }
 
-    parsed
+    let rest = line.strip_prefix('[')?;
+    let (time_part, after_bracket) = rest.split_once(']')?;
+
+    // タイムスタンプは必ず数字始まり。[ar:...]等のメタデータ行は英字始まりなのでここで弾く
+    if !time_part.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+
+    let time = parse_lrc_timestamp(time_part)?;
+    Some(Lyric {
+        time,
+        text: after_bracket.trim().to_string(),
+    })
+}
+
+/// "分:秒" または "分:秒.百分の一秒" 形式のタイムスタンプをミリ秒へ変換する。
+/// 形式が不正な場合は`None`を返す（呼び出し元でスキップされる）。
+fn parse_lrc_timestamp(time_part: &str) -> Option<u64> {
+    let (min_sec, hund) = match time_part.split_once('.') {
+        Some((min_sec, hund_str)) => {
+            let hund: u64 = hund_str.parse().ok()?;
+            // 元コードと同じ仕様: 小数部が2桁(百分の一秒)ならミリ秒換算(*10)、それ以外はそのまま扱う
+            let hund = if hund_str.len() == 2 { hund * 10 } else { hund };
+            (min_sec, hund)
+        }
+        None => (time_part, 0),
+    };
+
+    let (minutes_str, seconds_str) = min_sec.split_once(':')?;
+    let minutes: u64 = minutes_str.parse().ok()?;
+    let seconds: u64 = seconds_str.parse().ok()?;
+
+    Some((minutes * 60 + seconds) * 1000 + hund)
+}
+
+/// LRC形式（例: `[01:23.45]テキスト`）の行群を、時刻付き歌詞のリストへ変換する。
+/// メタデータ行や不正な行は自動的に読み飛ばされる。
+/// また、時刻が直前に採用した行より前（逆行）になっている行も除外する
+/// （LRCの記述ミスや行の並び替えミスによる、歌詞の時系列逆転を防ぐため）。
+pub fn parse_lrc(lrc_text: Vec<&str>) -> Vec<Lyric> {
+    let mut last_time: Option<u64> = None;
+
+    lrc_text
+        .into_iter()
+        .filter_map(parse_lrc_line)
+        .filter(|lyric| {
+            let is_in_order = last_time.map_or(true, |prev| lyric.time >= prev);
+            if is_in_order {
+                last_time = Some(lyric.time);
+            }
+            is_in_order
+        })
+        .collect()
 }
 
 /// LRCLIBのレスポンスから同期歌詞（syncedLyrics）が取れればパースしてキャッシュへ保存する。
@@ -134,6 +163,9 @@ fn select_best_match(ress: &[LRCLIBResponse], length: Option<u64>) -> Option<usi
         let mut select_lyrics_index: Option<usize> = None;
         let mut diff_time: u64 = u64::MAX;
         for (index, res) in ress.iter().enumerate() {
+            // duration*1000とlengthの差はどちらが大きいか分からないため、
+            // 符号なし整数のまま安全に絶対差を取れるabs_diffを使う
+            // （元コードは `(a - b) as i64.abs()` で、a<bのとき減算がオーバーフローしてパニックしていた）
             let diff: u64 = (res.duration * 1000).abs_diff(length);
             if diff < diff_time {
                 select_lyrics_index = Some(index);

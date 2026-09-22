@@ -66,14 +66,20 @@ async fn daemon(adjust_ms: u64) -> Result<()> {
             continue;
         };
 
+        if mpris.title.trim().is_empty() {
+            // タイトルがない場合は少し待って再試行する
+            sleep(Duration::from_millis(1000)).await;
+        }
+
         let song_key = cache::song_key(&mpris.artist, &mpris.title);
         let lyrics = resolve_lyrics(&mut lyrics_dict, &song_key, &mpris);
 
         if let Some(lyrics) = &lyrics {
             // 曲が切り替わった直後だけ、歌詞モデル全体をNoctaliaプラグインへ再送信する
             if prev_song_key != song_key {
-                let model = noctalia::build_lyric_model(lyrics, mpris.length);
-                noctalia::push_lyric_model(&model);
+                let model = noctalia::build_lyrics_model(lyrics, mpris.length);
+                noctalia::clear_lyrics().await;
+                noctalia::push_lyrics_model(&model).await;
             }
             prev_song_key = song_key.clone();
         }

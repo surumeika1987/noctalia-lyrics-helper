@@ -13,7 +13,7 @@ use crate::mpris::{MPRISData, MPRISStatus};
 
 /// `current.json`として書き出す、現在表示用の歌詞状態
 #[derive(Debug, Serialize)]
-pub struct NoctaliaLyricState {
+pub struct NoctaliaLyricsState {
     pub status: String,
     pub title: String,
     pub artist: String,
@@ -27,7 +27,7 @@ pub struct NoctaliaLyricState {
 
 /// Noctaliaプラグインへpush-jsonで送る歌詞モデルの1行
 #[derive(Debug, Serialize)]
-pub struct NoctaliaLyricModelLine {
+pub struct NoctaliaLyricsModelLine {
     pub time: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<u64>,
@@ -42,8 +42,8 @@ pub struct NoctaliaLyricModelLine {
 
 /// Noctaliaプラグインへpush-jsonで送る歌詞モデル全体
 #[derive(Debug, Serialize)]
-pub struct NoctaliaLyricModelRoot {
-    pub lines: Vec<NoctaliaLyricModelLine>,
+pub struct NoctaliaLyricsModelRoot {
+    pub lines: Vec<NoctaliaLyricsModelLine>,
 }
 
 /// MPRISの再生状態をNoctalia側で使う文字列表現に変換する
@@ -56,11 +56,13 @@ fn status_str(status: MPRISStatus) -> String {
 
 /// 歌詞行のリストから、Noctaliaプラグインへpushする歌詞モデルを構築する。
 /// 各行の`duration`は次の行の開始時刻との差分（最終行のみ曲の長さとの差分）とする。
-pub fn build_lyric_model(lyrics: &[Lyric], length: u64) -> NoctaliaLyricModelRoot {
-    let lines: Vec<NoctaliaLyricModelLine> = lyrics
+/// MPRISの再生時間より長い歌詞データは該当部分を無視する
+pub fn build_lyrics_model(lyrics: &[Lyric], length: u64) -> NoctaliaLyricsModelRoot {
+    let lines: Vec<NoctaliaLyricsModelLine> = lyrics
         .iter()
+        .filter(|v| v.time <= length)
         .enumerate()
-        .map(|(i, v)| NoctaliaLyricModelLine {
+        .map(|(i, v)| NoctaliaLyricsModelLine {
             time: v.time,
             duration: Some(match lyrics.get(i + 1) {
                 Some(next_lyric) => next_lyric.time - v.time,
@@ -73,11 +75,20 @@ pub fn build_lyric_model(lyrics: &[Lyric], length: u64) -> NoctaliaLyricModelRoo
         })
         .collect();
 
-    NoctaliaLyricModelRoot { lines }
+    NoctaliaLyricsModelRoot { lines }
+}
+
+pub async fn clear_lyrics() {
+    tracing::debug!("noctalia msg plugin h465855hgg/lyrics:service all clear");
+
+    let _ = Command::new("noctalia")
+        .args(["msg", "plugin", "h465855hgg/lyrics:service", "all", "clear"])
+        .status()
+        .await;
 }
 
 /// 歌詞モデル全体をNoctaliaプラグインへ`push-json`で送信する。
-pub fn push_lyric_model(model: &NoctaliaLyricModelRoot) {
+pub async fn push_lyrics_model(model: &NoctaliaLyricsModelRoot) {
     let json = serde_json::to_string(model).unwrap();
 
     tracing::debug!(
@@ -94,7 +105,8 @@ pub fn push_lyric_model(model: &NoctaliaLyricModelRoot) {
             "push-json",
             json.as_str(),
         ])
-        .spawn();
+        .status()
+        .await;
 }
 
 /// 現在の再生位置に対応する前後の歌詞テキストを含む状態を構築する。
@@ -103,8 +115,8 @@ pub fn build_state(
     mpris: &MPRISData,
     lyrics: Option<&[Lyric]>,
     adjust_ms: u64,
-) -> NoctaliaLyricState {
-    let empty_state = NoctaliaLyricState {
+) -> NoctaliaLyricsState {
+    let empty_state = NoctaliaLyricsState {
         status: status_str(mpris.status),
         title: mpris.title.clone(),
         artist: mpris.artist.clone(),
@@ -133,7 +145,7 @@ pub fn build_state(
         }
     }
 
-    NoctaliaLyricState {
+    NoctaliaLyricsState {
         prev_prev: if 2 <= active_index {
             lyrics
                 .get((active_index - 2) as usize)
@@ -176,7 +188,7 @@ pub fn build_state(
 }
 
 /// 状態を`current.json`としてキャッシュディレクトリへ書き出す。
-pub fn write_current_state(state: &NoctaliaLyricState) {
+pub fn write_current_state(state: &NoctaliaLyricsState) {
     let json = serde_json::to_string(state).unwrap();
     let noctalia_state_file = CACHE_DIR.join("current.json");
     std::fs::write(noctalia_state_file, json).unwrap();
