@@ -22,18 +22,18 @@ target/release/noctalia-lyrics
 ```
 ## 使用方法
 `noctalia-lyrics`には２つの機能があります
-- デーモン
-  常駐アプリとして起動します
-  systemdに登録するなどしてください
+- デーモン  
+  常駐アプリとして起動します  
+  systemdに登録するなどしてください  
   ```
   $ noctalia-lyrics daemon
   ```
-- 歌詞取得
-  LIBLRCから歌詞を取得します
-  現在再生されている音楽の歌詞として取得されます
-  自動で歌詞が取得されないときに使用してください
+- 歌詞取得  
+  LRCLIBから歌詞を取得します  
+  現在再生されている音楽の歌詞として取得されます  
+  自動で歌詞が取得されないときに使用してください  
   ```
-  $ noctalia-lyrics get <LIBLRC_ID>
+  $ noctalia-lyrics get <LRCLIB_ID>
   ```
 ## ライセンス
 MIT
