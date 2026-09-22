@@ -7,6 +7,7 @@
 以下のNoctalia pluginsに対応しています
 - [lyrics](https://noctalia.dev/plugins/community/lyrics)
 - [spotify-lyrics](https://noctalia.dev/plugins/community/spotify-lyrics)
+
 [Pear Desktop](https://github.com/pear-devs/pear-desktop)で使用することを前提に開発されています
 ## ビルド
 Rustのビルドツールがある環境で以下を実行してビルドしてください
