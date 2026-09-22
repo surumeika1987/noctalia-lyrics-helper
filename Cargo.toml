@@ -1,11 +1,13 @@
 [package]
 name = "noctalia-lyrics"
 version = "0.1.0"
+authors = ["surumeika1987"]
 edition = "2024"
 
 [dependencies]
 tracing = "0.1"
 tracing-subscriber = "0.3"
+urlencoding = "2"
 dirs = "7"
 md-5 = "0.11"
 hex = "0.4"

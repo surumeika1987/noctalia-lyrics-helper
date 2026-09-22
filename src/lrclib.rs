@@ -91,7 +91,12 @@ impl LRCLIBAPI {
 
     /// クエリ文字列でLRCLIBを検索し、候補となる歌詞情報の一覧を取得する。
     pub async fn search_lyrics(query: String) -> Result<Vec<LRCLIBResponse>, LRCLIBError> {
-        let url = format!("{}/api/search?q={}", LRCLIB_URL, query);
+        let mut query_params: Vec<(&str, String)> = vec![("q", query)];
+        let url = format!(
+            "{}/api/search?{}",
+            LRCLIB_URL,
+            build_query_string(query_params),
+        );
 
         // 検索APIには「404=見つからない」の特別扱いは無い（元コードと同様）
         let json = request_json(&url, false).await?;
@@ -111,7 +116,7 @@ impl LRCLIBAPI {
 fn build_query_string(query_params: Vec<(&str, String)>) -> String {
     query_params
         .into_iter()
-        .map(|(k, v)| format!("{}={}", k, v))
+        .map(|(k, v)| format!("{}={}", k, urlencoding::encode(v.as_str())))
         .collect::<Vec<String>>()
         .join("&")
 }
