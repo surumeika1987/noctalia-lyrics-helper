@@ -71,6 +71,7 @@ async fn daemon(adjust_ms: u64) -> Result<()> {
         if mpris.title.trim().is_empty() {
             // タイトルがない場合は少し待って再試行する
             sleep(Duration::from_millis(1000)).await;
+            continue;
         }
 
         let song_key = cache::song_key(&mpris.artist, &mpris.title);
