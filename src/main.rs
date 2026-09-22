@@ -62,8 +62,22 @@ struct NoctaliaLyricState {
 }
 
 #[derive(Debug, Serialize)]
-struct NoctaliaLyricModel {
-    lines: Vec<Lyric>,
+struct NoctaliaLyricModelLine {
+    time: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration: Option<u64>,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    translation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    romanization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chars: Option<Vec<u64>>,
+}
+
+#[derive(Debug, Serialize)]
+struct NoctaliaLyricModelRoot {
+    lines: Vec<NoctaliaLyricModelLine>,
 }
 
 fn parse_lrc(lrc_text: Vec<&str>) -> Vec<Lyric> {
@@ -103,7 +117,27 @@ fn parse_lrc(lrc_text: Vec<&str>) -> Vec<Lyric> {
     parsed
 }
 
-async fn get_player_status() -> Result<MPRISData> {
+async fn get_player_status() -> Result<Option<MPRISData>> {
+    let output = Command::new("playerctl")
+        .args(["-l"])
+        .output()
+        .await
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let players: Vec<&str> = stdout.trim().lines().collect();
+    let mut player: Option<String> = None;
+
+    // YoutubeMusicを優先
+    if players.contains(&"YoutubeMusic") {
+        player = Some(String::from("YoutubeMusic"));
+    } else if 0 < players.len() {
+        player = Some(players.get(0).unwrap().to_string());
+    }
+
+    if player == None {
+        return Ok(None);
+    }
+
     let output = Command::new("playerctl")
         .args([
             "-p",
@@ -130,7 +164,7 @@ async fn get_player_status() -> Result<MPRISData> {
         length: json["length"].as_u64().unwrap() / 1000,
         art_url: json["art_url"].as_str().unwrap().to_string(),
     };
-    Ok(mpris)
+    Ok(Some(mpris))
 }
 
 fn get_youtube_id(url: Option<&str>) -> Option<&str> {
@@ -310,164 +344,175 @@ async fn daemon(adjust_ms: u64) -> Result<()> {
 
     while true {
         let mpris = get_player_status().await?;
-        let song_key = format!("{} - {}", mpris.artist, mpris.title);
+        if let Some(mpris) = mpris {
+            let song_key = format!("{} - {}", mpris.artist, mpris.title);
 
-        let lyrics: Option<Vec<Lyric>> = match lyrics_dict.get(&song_key) {
-            None => {
-                if let Some(lyrics) = get_lyrics_local(mpris.title.as_str(), mpris.artist.as_str())
-                {
-                    lyrics_dict.insert(song_key.clone(), Some(lyrics.clone()));
-                    Some(lyrics)
-                } else {
-                    tracing::info!("Spawn get_lyrics_lrclib");
-                    tokio::spawn(get_lyrics_lrclib(
-                        mpris.title.clone(),
-                        mpris.artist.clone(),
-                        Some(mpris.length),
-                    ));
-                    lyrics_dict.insert(song_key.clone(), None);
-                    None
+            let lyrics: Option<Vec<Lyric>> = match lyrics_dict.get(&song_key) {
+                None => {
+                    if let Some(lyrics) =
+                        get_lyrics_local(mpris.title.as_str(), mpris.artist.as_str())
+                    {
+                        lyrics_dict.insert(song_key.clone(), Some(lyrics.clone()));
+                        Some(lyrics)
+                    } else {
+                        tracing::info!("Spawn get_lyrics_lrclib");
+                        tokio::spawn(get_lyrics_lrclib(
+                            mpris.title.clone(),
+                            mpris.artist.clone(),
+                            Some(mpris.length),
+                        ));
+                        lyrics_dict.insert(song_key.clone(), None);
+                        None
+                    }
                 }
-            }
-            Some(None) => {
-                if let Some(lyrics) = get_lyrics_local(mpris.title.as_str(), mpris.artist.as_str())
-                {
-                    lyrics_dict.insert(song_key.clone(), Some(lyrics.clone()));
-                    Some(lyrics)
-                } else {
-                    None
+                Some(None) => {
+                    if let Some(lyrics) =
+                        get_lyrics_local(mpris.title.as_str(), mpris.artist.as_str())
+                    {
+                        lyrics_dict.insert(song_key.clone(), Some(lyrics.clone()));
+                        Some(lyrics)
+                    } else {
+                        None
+                    }
                 }
-            }
-            Some(Some(lyrics)) => Some(lyrics.clone()),
-        };
+                Some(Some(lyrics)) => Some(lyrics.clone()),
+            };
 
-        if let Some(lyrics) = lyrics {
-            if prev_song_key != song_key {
-                let modified_lyrics: Vec<Lyric> = lyrics
-                    .iter()
-                    .map(|v| Lyric {
-                        time: v.time,
-                        text: if v.text.trim().len() == 0 {
-                            String::from("...")
-                        } else {
-                            v.text.clone()
-                        },
-                    })
-                    .collect();
-                // For Noctalia lyric plugin
-                let mut lyric_model: NoctaliaLyricModel = NoctaliaLyricModel {
-                    lines: modified_lyrics,
+            if let Some(lyrics) = lyrics {
+                if prev_song_key != song_key {
+                    let modified_lyrics: Vec<NoctaliaLyricModelLine> = lyrics
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| NoctaliaLyricModelLine {
+                            time: v.time,
+                            duration: if let Some(next_lyric) = lyrics.get(i + 1) {
+                                Some(next_lyric.time - v.time)
+                            } else {
+                                Some(mpris.length - v.time)
+                            },
+                            text: v.text.clone(),
+                            translation: None,
+                            romanization: None,
+                            chars: None,
+                        })
+                        .collect();
+                    // For Noctalia lyric plugin
+                    let mut lyric_model: NoctaliaLyricModelRoot = NoctaliaLyricModelRoot {
+                        lines: modified_lyrics,
+                    };
+
+                    let json = serde_json::to_string(&lyric_model).unwrap();
+
+                    tracing::debug!(
+                        "noctalia msg plugin h465855hgg/lyrics:service all push-json '{}'",
+                        json
+                    );
+
+                    Command::new("noctalia")
+                        .args([
+                            "msg",
+                            "plugin",
+                            "h465855hgg/lyrics:service",
+                            "all",
+                            "push-json",
+                            json.as_str(),
+                        ])
+                        .spawn();
+                }
+
+                let mut active_index: i64 = -1;
+                let pos = mpris.position + adjust_ms;
+
+                for (index, lyric) in lyrics.iter().enumerate() {
+                    if lyric.time <= pos {
+                        active_index = index as i64
+                    } else {
+                        break;
+                    }
+                }
+
+                let default_lyric = Lyric::default();
+
+                let state = NoctaliaLyricState {
+                    status: match mpris.status {
+                        Paused => "Paused".to_string(),
+                        Playing => "Playing".to_string(),
+                    },
+                    title: mpris.title.clone(),
+                    artist: mpris.artist.clone(),
+                    prev_prev: if 2 <= active_index {
+                        lyrics
+                            .get((active_index - 2) as usize)
+                            .unwrap_or(&default_lyric)
+                            .text
+                            .clone()
+                    } else {
+                        String::new()
+                    },
+                    prev: if 1 <= active_index {
+                        lyrics
+                            .get((active_index - 1) as usize)
+                            .unwrap_or(&default_lyric)
+                            .text
+                            .clone()
+                    } else {
+                        String::new()
+                    },
+                    current: if 0 <= active_index {
+                        lyrics
+                            .get(active_index as usize)
+                            .unwrap_or(&default_lyric)
+                            .text
+                            .clone()
+                    } else {
+                        String::new()
+                    },
+                    next: lyrics
+                        .get((active_index + 1) as usize)
+                        .unwrap_or(&default_lyric)
+                        .text
+                        .clone(),
+                    next_next: lyrics
+                        .get((active_index + 2) as usize)
+                        .unwrap_or(&default_lyric)
+                        .text
+                        .clone(),
+                    art_path: String::new(),
+                };
+                let json = serde_json::to_string(&state).unwrap();
+
+                let noctalia_state_file = CACHE_DIR.join("current.json");
+                std::fs::write(noctalia_state_file, json).unwrap();
+
+                prev_song_key = song_key.clone();
+            } else {
+                let state = NoctaliaLyricState {
+                    status: match mpris.status {
+                        Paused => "Paused".to_string(),
+                        Playing => "Playing".to_string(),
+                    },
+                    title: mpris.title.clone(),
+                    artist: mpris.artist.clone(),
+                    prev_prev: String::new(),
+                    prev: String::new(),
+                    current: String::new(),
+                    next: String::new(),
+                    next_next: String::new(),
+                    art_path: String::new(),
                 };
 
-                let json = serde_json::to_string(&lyric_model).unwrap();
+                let json = serde_json::to_string(&state).unwrap();
 
-                tracing::debug!(
-                    "noctalia msg plugin h465855hgg/lyrics:service all push-json '{}'",
-                    json
-                );
-
-                Command::new("noctalia")
-                    .args([
-                        "msg",
-                        "plugin",
-                        "h465855hgg/lyrics:service",
-                        "all",
-                        "push-json",
-                        json.as_str(),
-                    ])
-                    .spawn();
+                let noctalia_state_file = CACHE_DIR.join("current.json");
+                std::fs::write(noctalia_state_file, json).unwrap();
             }
 
-            let mut active_index: i64 = -1;
-            let pos = mpris.position + adjust_ms;
-
-            for (index, lyric) in lyrics.iter().enumerate() {
-                if lyric.time <= pos {
-                    active_index = index as i64
-                } else {
-                    break;
-                }
+            match mpris.status {
+                Paused => sleep(Duration::from_millis(1000)).await,
+                Playing => sleep(Duration::from_millis(100)).await,
             }
-
-            let default_lyric = Lyric::default();
-
-            let state = NoctaliaLyricState {
-                status: match mpris.status {
-                    Paused => "Paused".to_string(),
-                    Playing => "Playing".to_string(),
-                },
-                title: mpris.title.clone(),
-                artist: mpris.artist.clone(),
-                prev_prev: if 2 <= active_index {
-                    lyrics
-                        .get((active_index - 2) as usize)
-                        .unwrap_or(&default_lyric)
-                        .text
-                        .clone()
-                } else {
-                    String::new()
-                },
-                prev: if 1 <= active_index {
-                    lyrics
-                        .get((active_index - 1) as usize)
-                        .unwrap_or(&default_lyric)
-                        .text
-                        .clone()
-                } else {
-                    String::new()
-                },
-                current: if 0 <= active_index {
-                    lyrics
-                        .get(active_index as usize)
-                        .unwrap_or(&default_lyric)
-                        .text
-                        .clone()
-                } else {
-                    String::new()
-                },
-                next: lyrics
-                    .get((active_index + 1) as usize)
-                    .unwrap_or(&default_lyric)
-                    .text
-                    .clone(),
-                next_next: lyrics
-                    .get((active_index + 2) as usize)
-                    .unwrap_or(&default_lyric)
-                    .text
-                    .clone(),
-                art_path: String::new(),
-            };
-            let json = serde_json::to_string(&state).unwrap();
-
-            let noctalia_state_file = CACHE_DIR.join("current.json");
-            std::fs::write(noctalia_state_file, json).unwrap();
-
-            prev_song_key = song_key.clone();
         } else {
-            let state = NoctaliaLyricState {
-                status: match mpris.status {
-                    Paused => "Paused".to_string(),
-                    Playing => "Playing".to_string(),
-                },
-                title: mpris.title.clone(),
-                artist: mpris.artist.clone(),
-                prev_prev: String::new(),
-                prev: String::new(),
-                current: String::new(),
-                next: String::new(),
-                next_next: String::new(),
-                art_path: String::new(),
-            };
-
-            let json = serde_json::to_string(&state).unwrap();
-
-            let noctalia_state_file = CACHE_DIR.join("current.json");
-            std::fs::write(noctalia_state_file, json).unwrap();
-        }
-
-        match mpris.status {
-            Paused => sleep(Duration::from_millis(1000)).await,
-            Playing => sleep(Duration::from_millis(100)).await,
+            sleep(Duration::from_millis(1000)).await;
         }
     }
     Ok(())
@@ -493,16 +538,20 @@ async fn main() -> Result<()> {
             }
             let id: u64 = args.get(2).unwrap().parse()?;
             let mpris = get_player_status().await?;
-            let song_key = format!("{} - {}", mpris.artist, mpris.title);
+            if let Some(mpris) = mpris {
+                let song_key = format!("{} - {}", mpris.artist, mpris.title);
 
-            tracing::info!("Get {} as {}", song_key, id);
+                tracing::info!("Get {} as {}", song_key, id);
 
-            match get_lyrics_lrclib_id(mpris.title.clone(), mpris.artist.clone(), id).await {
-                Some(_) => tracing::info!("Success."),
-                None => tracing::info!("Can't get lyrics."),
+                match get_lyrics_lrclib_id(mpris.title.clone(), mpris.artist.clone(), id).await {
+                    Some(_) => tracing::info!("Success."),
+                    None => tracing::info!("Can't get lyrics."),
+                }
+                Ok(())
+            } else {
+                tracing::error!("Player not found. Please play music before run.");
+                Ok(())
             }
-
-            Ok(())
         }
         _ => Ok(()),
     }
