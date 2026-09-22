@@ -1,8 +1,13 @@
 [package]
 name = "noctalia-lyrics"
+description = "Helper for Noctalia lyric plugins"
+repository = "https://github.com/surumeika1987/noctalia-lyrics-helper"
 version = "0.1.0"
 authors = ["surumeika1987"]
 edition = "2024"
+license = "MIT"
+license-file = "LICENSE"
+readme = "README.md"
 
 [dependencies]
 tracing = "0.1"
