@@ -10,8 +10,15 @@ use thiserror::Error;
 
 /// LRCLIB APIのベースURL
 const LRCLIB_URL: &str = "https://lrclib.net";
-/// リクエストヘッダに載せるUser-Agent（パッケージ名+バージョン）
-const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+/// リクエストヘッダに載せるUser-Agent（パッケージ名+バージョン+リポジトリURL）
+const USER_AGENT: &str = concat!(
+    env!("CARGO_PKG_NAME"),
+    "/",
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("CARGO_PKG_REPOSITORY"),
+    ")"
+);
 
 /// LRCLIB APIが返す歌詞情報
 #[derive(Debug, Deserialize)]
@@ -129,6 +136,7 @@ async fn request_json(
     url: &str,
     treat_404_as_not_found: bool,
 ) -> Result<serde_json::Value, LRCLIBError> {
+    tracing::debug!("USER_AGENT: {}", USER_AGENT);
     tracing::info!("Get: {}", url);
 
     let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
