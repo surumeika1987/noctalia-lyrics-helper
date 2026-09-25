@@ -8,7 +8,13 @@
 - [lyrics](https://noctalia.dev/plugins/community/lyrics)
 - [spotify-lyrics](https://noctalia.dev/plugins/community/spotify-lyrics)
 
-[Pear Desktop](https://github.com/pear-devs/pear-desktop)で使用することを前提に開発されています
+## 著作権について
+本ソフトウェアによって取得される歌詞の著作権その他の権利は、それぞれの権利者に帰属します。  
+  
+本ソフトウェアは歌詞を権利者の許諾なく再配布することを目的としたものではありません。取得した歌詞の保存、表示、転載、配布、公開その他の利用については、利用者自身の責任において、適用される法令および各サービスの利用規約等を遵守してください。  
+
+本ソフトウェアの作者は、取得した歌詞の利用により生じた問題について責任を負いません。  
+
 ## ビルド
 Rustのビルドツールがある環境で以下を実行してビルドしてください
 ```
@@ -26,14 +32,19 @@ target/release/noctalia-lyrics
   常駐アプリとして起動します  
   systemdに登録するなどしてください  
   ```
-  $ noctalia-lyrics daemon
+  $ noctalia-lyrics -d
   ```
 - 歌詞取得  
   LRCLIBから歌詞を取得します  
   現在再生されている音楽の歌詞として取得されます  
   自動で歌詞が取得されないときに使用してください  
   ```
-  $ noctalia-lyrics get <LRCLIB_ID>
+  $ noctalia-lyrics -g <LRCLIB_ID>
   ```
+
+### オプション
+以下のオプションが利用可能です
+- `-P` MPRISを取得する優先プレイヤーを指定します
+- `-D` プラグインに渡す歌詞の表示速度を調整します
 ## ライセンス
 MIT
