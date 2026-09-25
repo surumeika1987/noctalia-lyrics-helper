@@ -29,7 +29,7 @@ const FIELD_SEPARATOR: &str = "\u{1f}";
 /// 現在アクティブなプレイヤーの再生状態を取得する。
 /// 複数のプレイヤーが動作している場合はYoutubeMusicを優先し、無ければ先頭のプレイヤーを使う。
 /// プレイヤーが1つも見つからない場合は`Ok(None)`を返す。
-pub async fn get_player_status() -> Result<Option<MPRISData>> {
+pub async fn get_player_status(priority_player: &str) -> Result<Option<MPRISData>> {
     let output = Command::new("playerctl")
         .args(["-l"])
         .output()
@@ -39,9 +39,9 @@ pub async fn get_player_status() -> Result<Option<MPRISData>> {
     let players: Vec<&str> = stdout.trim().lines().collect();
     let mut player: Option<String> = None;
 
-    // YoutubeMusicを優先
-    if players.contains(&"YoutubeMusic") {
-        player = Some(String::from("YoutubeMusic"));
+    // "priority_player"を優先
+    if players.contains(&priority_player) {
+        player = Some(priority_player.to_string());
     } else if 0 < players.len() {
         player = Some(players.get(0).unwrap().to_string());
     }

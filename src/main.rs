@@ -16,6 +16,20 @@ use tokio::time::sleep;
 use lyrics::Lyric;
 use mpris::{MPRISData, MPRISStatus};
 
+/// 動作モード
+#[derive(PartialEq, Debug)]
+enum Mode {
+    Daemon,
+    Get,
+}
+
+#[derive(Copy, Eq, PartialEq, Clone, Hash, Debug)]
+enum ProgramOption {
+    Get,
+    Delay,
+    Player,
+}
+
 /// 曲ごとの歌詞取得状況（`lyrics_dict`）を確認・更新しながら、現時点で表示可能な歌詞を返す。
 ///
 /// - 未処理の曲: ローカルキャッシュを確認し、無ければLRCLIBへの取得をバックグラウンドで開始する
@@ -54,14 +68,14 @@ fn resolve_lyrics(
 }
 
 /// メインループ。定期的にMPRISの再生状態を取得し、歌詞を解決してNoctaliaプラグインへ反映する。
-async fn daemon(adjust_ms: u64) -> Result<()> {
+async fn daemon(adjust_ms: u64, priority_player: &str) -> Result<()> {
     let mut lyrics_dict: HashMap<String, Option<Vec<Lyric>>> = HashMap::new();
     let mut prev_song_key = String::new();
 
     cache::init_cache_dir();
 
     loop {
-        let mpris = mpris::get_player_status().await?;
+        let mpris = mpris::get_player_status(priority_player).await?;
         let Some(mpris) = mpris else {
             // プレイヤーが見つからない場合は少し待って再試行する
             sleep(Duration::from_millis(1000)).await;
@@ -102,21 +116,82 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = env::args().collect();
+    let mut mode: Option<Mode> = None;
+    let mut current_option: Option<ProgramOption> = None;
+    let mut option_arg: HashMap<ProgramOption, String> = HashMap::new();
 
-    if args.len() == 1 {
-        tracing::error!("Need args daemon or get <LRCLIB_ID>");
+    for arg in &args[1..] {
+        if let Some(option) = current_option {
+            option_arg.insert(option, arg.clone());
+            current_option = None;
+            continue;
+        }
+
+        match arg.as_str() {
+            "-d" => {
+                if mode != None {
+                    tracing::error!("-g and -d can be used ONLY ONCE in total.")
+                }
+                mode = Some(Mode::Daemon);
+            }
+            "-g" => {
+                if mode != None {
+                    tracing::error!("-g and -d can be used ONLY ONCE in total.")
+                }
+                mode = Some(Mode::Get);
+                current_option = Some(ProgramOption::Get);
+            }
+            "-P" => current_option = Some(ProgramOption::Player),
+            "-D" => current_option = Some(ProgramOption::Delay),
+            _ => {
+                tracing::error!("Unknown option: {}", arg);
+                return Ok(());
+            }
+        }
+    }
+
+    if mode == None {
+        tracing::error!("Need args -d or -g <LRCLIB_ID>");
         return Ok(());
     }
 
-    match args.get(1).unwrap().as_str() {
-        "daemon" => daemon(1000).await,
-        "get" => {
-            if args.len() == 2 {
-                tracing::error!("Need args for get. get <LRCLIB_ID>");
+    if let Some(option) = current_option {
+        tracing::error!("Option need more args.");
+        return Ok(());
+    }
+
+    match mode.unwrap() {
+        Mode::Daemon => {
+            daemon(
+                option_arg
+                    .get(&ProgramOption::Delay)
+                    .unwrap_or(&String::from("0"))
+                    .parse()
+                    .unwrap_or(0),
+                option_arg
+                    .get(&ProgramOption::Player)
+                    .unwrap_or(&String::from("spotify")),
+            )
+            .await
+        }
+        Mode::Get => {
+            if option_arg.get(&ProgramOption::Get) == None {
+                tracing::error!("Get need more arg. ex -g <LRCLIB_ID>");
                 return Ok(());
             }
-            let id: u64 = args.get(2).unwrap().parse()?;
-            let mpris = mpris::get_player_status().await?;
+            let Ok(id) = option_arg.get(&ProgramOption::Get).unwrap().parse() else {
+                tracing::error!(
+                    "Can't parse id: {}",
+                    option_arg.get(&ProgramOption::Get).unwrap()
+                );
+                return Ok(());
+            };
+            let mpris = mpris::get_player_status(
+                option_arg
+                    .get(&ProgramOption::Player)
+                    .unwrap_or(&String::from("spotify")),
+            )
+            .await?;
             if let Some(mpris) = mpris {
                 let song_key = cache::song_key(&mpris.artist, &mpris.title);
 
@@ -134,6 +209,5 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         }
-        _ => Ok(()),
     }
 }
