@@ -39,9 +39,11 @@ pub struct LRCLIBResponse {
 #[derive(Debug, Error)]
 pub enum LRCLIBError {
     #[error("Lyrics not found.")]
-    NotFound(),
+    NotFound,
     #[error("Too many request to LRCLIB.")]
-    TooManyRequest(),
+    TooManyRequest,
+    #[error("LRCLIB Server Overload.")]
+    Overload,
     #[error("Somethin wrong. code: {0}")]
     ResponseNotOK(reqwest::StatusCode),
     #[error("HTTP request failed: {0}")]
@@ -58,18 +60,16 @@ impl LRCLIBAPI {
     ///
     /// 対象が見つからない場合は`LRCLIBError::NotFound`を返す。
     pub async fn get_lyrics_with_a_tracks_signature(
-        track_name: &str,
-        artist_name: &str,
-        album_name: Option<&str>,
+        track_name: String,
+        artist_name: String,
+        album_name: Option<String>,
         duration: Option<u16>,
     ) -> Result<LRCLIBResponse, LRCLIBError> {
-        let mut query_params: Vec<(&str, String)> = vec![
-            ("track_name", track_name.into()),
-            ("artist_name", artist_name.into()),
-        ];
+        let mut query_params: Vec<(&str, String)> =
+            vec![("track_name", track_name), ("artist_name", artist_name)];
 
         if let Some(album) = album_name {
-            query_params.push(("album_name", album.into()));
+            query_params.push(("album_name", album));
         }
 
         if let Some(dur) = duration {
@@ -145,12 +145,17 @@ async fn request_json(
 
     if treat_404_as_not_found && status == reqwest::StatusCode::NOT_FOUND {
         tracing::info!("Lyrics not found.");
-        return Err(LRCLIBError::NotFound());
+        return Err(LRCLIBError::NotFound);
     }
 
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         tracing::info!("Too Many Request.");
-        return Err(LRCLIBError::TooManyRequest());
+        return Err(LRCLIBError::TooManyRequest);
+    }
+
+    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        tracing::info!("Server Overloaded.");
+        return Err(LRCLIBError::Overload);
     }
 
     if status != reqwest::StatusCode::OK {

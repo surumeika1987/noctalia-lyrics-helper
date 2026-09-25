@@ -5,10 +5,13 @@
 //! `parse_and_cache` に、`fallback`内の候補選択ロジックは
 //! `select_best_match` にそれぞれ切り出した。
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
 
 use crate::cache;
-use crate::lrclib::{LRCLIBAPI, LRCLIBResponse};
+use crate::lrclib::{LRCLIBAPI, LRCLIBError, LRCLIBResponse};
 
 /// パース済みの1行分の歌詞（時刻[ms]とテキスト）
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -121,20 +124,39 @@ pub async fn get_lyrics_lrclib(
     let key = cache::song_key(&artist, &title);
     let hash = cache::song_key_hash(&key);
 
-    let response = LRCLIBAPI::get_lyrics_with_a_tracks_signature(
-        title.as_str(),
-        artist.as_str(),
-        None,
-        length.map(|len| (len / 1000) as u16),
-    )
-    .await;
+    let mut retry = 0;
 
-    match response {
-        Ok(res) => match parse_and_cache(&res, &hash, &key) {
-            Some(lyrics) => Some(lyrics),
-            None => fallback(title, artist, length).await,
-        },
-        Err(_) => fallback(title, artist, length).await,
+    loop {
+        let response = LRCLIBAPI::get_lyrics_with_a_tracks_signature(
+            title.clone(),
+            artist.clone(),
+            None,
+            length.map(|len| (len / 1000) as u16),
+        )
+        .await;
+
+        match response {
+            Ok(res) => match parse_and_cache(&res, &hash, &key) {
+                Some(lyrics) => return Some(lyrics),
+                None => return fallback(title, artist, length).await,
+            },
+            Err(err) => {
+                match err {
+                    LRCLIBError::NotFound => return fallback(title, artist, length).await,
+                    LRCLIBError::TooManyRequest => return None,
+                    LRCLIBError::Overload => {
+                        // 5回失敗で終了
+                        if 5 < retry {
+                            return None;
+                        }
+                        // 少し待って再取得
+                        sleep(Duration::from_millis(1000)).await;
+                        retry += 1;
+                    }
+                    _ => return None,
+                };
+            }
+        }
     }
 }
 
@@ -145,19 +167,38 @@ pub async fn fallback(title: String, artist: String, length: Option<u64>) -> Opt
     let hash = cache::song_key_hash(&key);
 
     tracing::info!("Fallback to search");
-    let responses = LRCLIBAPI::search_lyrics(title).await;
 
-    match responses {
-        Ok(ress) => {
-            let filtered_ress: Vec<LRCLIBResponse> = ress
-                .into_iter()
-                .filter(|v| v.syncd_lyrics != None)
-                .collect();
-            let select_lyrics_index = select_best_match(&filtered_ress, length)?;
-            let res = filtered_ress.get(select_lyrics_index).unwrap();
-            parse_and_cache(res, &hash, &key)
+    let mut retlay = 0;
+
+    loop {
+        let responses = LRCLIBAPI::search_lyrics(title.clone()).await;
+
+        match responses {
+            Ok(ress) => {
+                let filtered_ress: Vec<LRCLIBResponse> = ress
+                    .into_iter()
+                    .filter(|v| v.syncd_lyrics != None)
+                    .collect();
+                let select_lyrics_index = select_best_match(&filtered_ress, length)?;
+                let res = filtered_ress.get(select_lyrics_index).unwrap();
+                return parse_and_cache(res, &hash, &key);
+            }
+            Err(err) => {
+                match err {
+                    LRCLIBError::TooManyRequest => return None,
+                    LRCLIBError::Overload => {
+                        // 5回失敗で終了
+                        if 5 < retlay {
+                            return None;
+                        }
+                        // 少し待って再取得
+                        sleep(Duration::from_millis(1000)).await;
+                        retlay += 1;
+                    }
+                    _ => return None,
+                };
+            }
         }
-        Err(_) => None,
     }
 }
 
