@@ -97,7 +97,7 @@ fn parse_and_cache(
     song_key: &str,
 ) -> Option<Vec<Lyric>> {
     let Some(synd_lrc_text) = res.syncd_lyrics.as_ref() else {
-        tracing::info!("Can't parse because syncd_lyrics not found.");
+        tracing::info!("Can't find syncd lyrics.");
         return None;
     };
     let lyrics = parse_lrc(
@@ -160,6 +160,21 @@ pub async fn get_lyrics_lrclib(
                         sleep(Duration::from_millis(1000)).await;
                         retry += 1;
                     }
+                    LRCLIBError::Request(req_err) => {
+                        if req_err.is_timeout() {
+                            // 5回失敗で終了
+                            if 5 < retry {
+                                tracing::info!("Retry limit reached.");
+                                return None;
+                            }
+                            tracing::info!("Connection timeout. Rtrying...");
+                            // 少し待って再取得
+                            sleep(Duration::from_millis(1000)).await;
+                            retry += 1;
+                        } else {
+                            return None;
+                        }
+                    }
                     _ => return None,
                 };
             }
@@ -179,7 +194,7 @@ pub async fn search_lyrics_lrclib(
 
     tracing::info!("Fallback to search");
 
-    let mut retlay = 0;
+    let mut retry = 0;
 
     loop {
         let responses = LRCLIBAPI::search_lyrics(title.clone()).await;
@@ -190,6 +205,10 @@ pub async fn search_lyrics_lrclib(
                     .into_iter()
                     .filter(|v| v.syncd_lyrics != None)
                     .collect();
+                if filtered_ress.len() == 0 {
+                    tracing::info!("Can't find syncd lyrics.");
+                    return None;
+                }
                 let select_lyrics_index = select_best_match(&filtered_ress, length)?;
                 let res = filtered_ress.get(select_lyrics_index).unwrap();
                 return parse_and_cache(res, &hash, &key);
@@ -199,14 +218,29 @@ pub async fn search_lyrics_lrclib(
                     LRCLIBError::TooManyRequest => return None,
                     LRCLIBError::Overload => {
                         // 5回失敗で終了
-                        if 5 < retlay {
+                        if 5 < retry {
                             tracing::info!("Retry limit reached.");
                             return None;
                         }
                         tracing::info!("Server Overloaded. Rtrying...");
                         // 少し待って再取得
                         sleep(Duration::from_millis(1000)).await;
-                        retlay += 1;
+                        retry += 1;
+                    }
+                    LRCLIBError::Request(req_err) => {
+                        if req_err.is_timeout() {
+                            // 5回失敗で終了
+                            if 5 < retry {
+                                tracing::info!("Retry limit reached.");
+                                return None;
+                            }
+                            tracing::info!("Connection timeout. Rtrying...");
+                            // 少し待って再取得
+                            sleep(Duration::from_millis(1000)).await;
+                            retry += 1;
+                        } else {
+                            return None;
+                        }
                     }
                     _ => return None,
                 };

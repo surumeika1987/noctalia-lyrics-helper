@@ -5,6 +5,8 @@
 //! それぞれ重複していたため、共通ヘルパー関数（`request_json` / `response_from_json`）
 //! に集約した。外部から見える公開API（関数シグネチャ・挙動）は変更していない。
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -19,6 +21,8 @@ const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_REPOSITORY"),
     ")"
 );
+/// LRCLIBへの接続のタイムアウト
+const TIMEOUT_SEC: u64 = 5;
 
 /// LRCLIB APIが返す歌詞情報
 #[derive(Debug, Deserialize)]
@@ -139,7 +143,10 @@ async fn request_json(
     tracing::debug!("USER_AGENT: {}", USER_AGENT);
     tracing::info!("Get: {}", url);
 
-    let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(TIMEOUT_SEC))
+        .build()?;
     let response = client.get(url).send().await?;
     let status = response.status();
 
