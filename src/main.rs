@@ -68,7 +68,7 @@ fn resolve_lyrics(
 }
 
 /// メインループ。定期的にMPRISの再生状態を取得し、歌詞を解決してNoctaliaプラグインへ反映する。
-async fn daemon(adjust_ms: u64, priority_player: &str) -> Result<()> {
+async fn daemon(adjust_ms: i64, priority_player: &str) -> Result<()> {
     let mut lyrics_dict: HashMap<String, Option<Vec<Lyric>>> = HashMap::new();
     let mut prev_song_key = String::new();
 

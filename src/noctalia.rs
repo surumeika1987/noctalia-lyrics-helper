@@ -118,7 +118,7 @@ pub async fn push_lyrics_model(model: &NoctaliaLyricsModelRoot) {
 pub fn build_state(
     mpris: &MPRISData,
     lyrics: Option<&[Lyric]>,
-    adjust_ms: u64,
+    adjust_ms: i64,
 ) -> NoctaliaLyricsState {
     let empty_state = NoctaliaLyricsState {
         status: status_str(mpris.status),
@@ -137,7 +137,11 @@ pub fn build_state(
     };
 
     let default_lyric = Lyric::default();
-    let pos = mpris.position + adjust_ms;
+    let pos = if 0 <= mpris.position as i64 + adjust_ms {
+        (mpris.position as i64 + adjust_ms) as u64
+    } else {
+        0
+    };
 
     // 現在位置以前の歌詞行のうち、最後に該当する行（アクティブな行）のインデックスを求める
     let mut active_index: i64 = -1;
