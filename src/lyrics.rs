@@ -96,7 +96,10 @@ fn parse_and_cache(
     song_key_hash: &str,
     song_key: &str,
 ) -> Option<Vec<Lyric>> {
-    let synd_lrc_text = res.syncd_lyrics.as_ref()?;
+    let Some(synd_lrc_text) = res.syncd_lyrics.as_ref() else {
+        tracing::info!("Can't parse because syncd_lyrics not found.");
+        return None;
+    };
     let lyrics = parse_lrc(
         synd_lrc_text
             .iter()
@@ -138,17 +141,21 @@ pub async fn get_lyrics_lrclib(
         match response {
             Ok(res) => match parse_and_cache(&res, &hash, &key) {
                 Some(lyrics) => return Some(lyrics),
-                None => return fallback(title, artist, length).await,
+                None => return search_lyrics_lrclib(title, artist, length).await,
             },
             Err(err) => {
                 match err {
-                    LRCLIBError::NotFound => return fallback(title, artist, length).await,
+                    LRCLIBError::NotFound => {
+                        return search_lyrics_lrclib(title, artist, length).await;
+                    }
                     LRCLIBError::TooManyRequest => return None,
                     LRCLIBError::Overload => {
                         // 5回失敗で終了
                         if 5 < retry {
+                            tracing::info!("Retry limit reached.");
                             return None;
                         }
+                        tracing::info!("Server Overloaded. Rtrying...");
                         // 少し待って再取得
                         sleep(Duration::from_millis(1000)).await;
                         retry += 1;
@@ -161,8 +168,12 @@ pub async fn get_lyrics_lrclib(
 }
 
 /// LRCLIBの検索APIで曲名の候補を探し
-/// 指定された長さに最も近い同期歌詞があるものを採用するフォールバック処理。
-pub async fn fallback(title: String, artist: String, length: Option<u64>) -> Option<Vec<Lyric>> {
+/// 指定された長さに最も近い同期歌詞があるものを採用する
+pub async fn search_lyrics_lrclib(
+    title: String,
+    artist: String,
+    length: Option<u64>,
+) -> Option<Vec<Lyric>> {
     let key = cache::song_key(&artist, &title);
     let hash = cache::song_key_hash(&key);
 
@@ -189,8 +200,10 @@ pub async fn fallback(title: String, artist: String, length: Option<u64>) -> Opt
                     LRCLIBError::Overload => {
                         // 5回失敗で終了
                         if 5 < retlay {
+                            tracing::info!("Retry limit reached.");
                             return None;
                         }
+                        tracing::info!("Server Overloaded. Rtrying...");
                         // 少し待って再取得
                         sleep(Duration::from_millis(1000)).await;
                         retlay += 1;
