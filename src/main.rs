@@ -95,8 +95,8 @@ async fn daemon(adjust_ms: i64, priority_player: &str) -> Result<()> {
             // 曲が切り替わった直後だけ、歌詞モデル全体をNoctaliaプラグインへ再送信する
             if prev_song_key != song_key {
                 let model = noctalia::build_lyrics_model(lyrics, mpris.length);
-                noctalia::clear_lyrics().await;
-                noctalia::push_lyrics_model(&model).await;
+                // 非同期で送信する
+                tokio::spawn(push_lyrics_to_noctalia(model));
             }
             prev_song_key = song_key.clone();
         }
@@ -109,6 +109,14 @@ async fn daemon(adjust_ms: i64, priority_player: &str) -> Result<()> {
             MPRISStatus::Playing => sleep(Duration::from_millis(100)).await,
         }
     }
+}
+
+// Noctaliaに歌詞を送信する関数
+async fn push_lyrics_to_noctalia(model: noctalia::NoctaliaLyricsModelRoot) {
+    // プラグインがMPRISから情報を取得するまで待つ
+    sleep(Duration::from_millis(1000)).await;
+    noctalia::clear_lyrics().await;
+    noctalia::push_lyrics_model(&model).await;
 }
 
 #[tokio::main]
