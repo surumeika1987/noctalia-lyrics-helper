@@ -4,6 +4,8 @@
 //! ほぼ同一のフィールド（status/title/artist/art_path）を持つ状態構築が重複していたため、
 //! `build_state`関数に一本化した。
 
+use std::process::Stdio;
+
 use serde::Serialize;
 use tokio::process::Command;
 
@@ -25,6 +27,23 @@ pub struct NoctaliaLyricsState {
     pub art_path: String,
 }
 
+// Noctaliaプラグインへpush-stateで送る楽曲情報
+#[derive(Debug, Serialize)]
+pub struct NoctaliaLyricsModelTrack {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub status: String,
+    pub position: u64,
+    pub duration: u64,
+    #[serde(rename = "playerInstance")]
+    pub player_instance: String,
+    #[serde(rename = "trackId")]
+    pub track_id: String,
+    #[serde(rename = "mediaUrl")]
+    pub media_url: String,
+}
+
 /// Noctaliaプラグインへpush-jsonで送る歌詞モデルの1行
 #[derive(Debug, Serialize)]
 pub struct NoctaliaLyricsModelLine {
@@ -41,9 +60,18 @@ pub struct NoctaliaLyricsModelLine {
 }
 
 /// Noctaliaプラグインへpush-jsonで送る歌詞モデル全体
-#[derive(Debug, Serialize)]
+#[derive(Default, Debug, Serialize)]
 pub struct NoctaliaLyricsModelRoot {
-    pub lines: Vec<NoctaliaLyricsModelLine>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<NoctaliaLyricsModelTrack>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<Vec<NoctaliaLyricsModelLine>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover: Option<String>,
 }
 
 /// MPRISの再生状態をNoctalia側で使う文字列表現に変換する
@@ -54,10 +82,50 @@ fn status_str(status: MPRISStatus) -> String {
     }
 }
 
+/// 全ての情報を持つモデルを構築する
+pub fn build_lyrics_model(lyrics: &[Lyric], mpris: &MPRISData) -> NoctaliaLyricsModelRoot {
+    let mpris_only = build_lyrics_model_mpris_only(mpris);
+    let lyrics_only = build_lyrics_model_lyrics_only(lyrics, mpris.length);
+    NoctaliaLyricsModelRoot {
+        lines: lyrics_only.lines,
+        ..mpris_only
+    }
+}
+
+/// MPRISの情報からNoctaliaプラグインへpushする歌詞以外のモデルを構築する。
+pub fn build_lyrics_model_mpris_only(mpris: &MPRISData) -> NoctaliaLyricsModelRoot {
+    NoctaliaLyricsModelRoot {
+        track: Some(NoctaliaLyricsModelTrack {
+            title: mpris.title.clone(),
+            artist: mpris.artist.clone(),
+            album: String::new(),
+            status: match mpris.status {
+                MPRISStatus::Playing => String::from("playing"),
+                MPRISStatus::Paused => String::from("paused"),
+            },
+            // ms -> us
+            position: mpris.position * 1000,
+            // ms -> us
+            duration: mpris.length * 1000,
+            player_instance: mpris.player.clone(),
+            track_id: String::new(),
+            media_url: String::new(),
+        }),
+        lines: None,
+        // ms -> us
+        position: Some(mpris.position * 1000),
+        playing: Some(match mpris.status {
+            MPRISStatus::Playing => true,
+            MPRISStatus::Paused => false,
+        }),
+        cover: Some(String::new()),
+    }
+}
+
 /// 歌詞行のリストから、Noctaliaプラグインへpushする歌詞モデルを構築する。
 /// 各行の`duration`は次の行の開始時刻との差分（最終行のみ曲の長さとの差分）とする。
 /// MPRISの再生時間より長い歌詞データは該当部分を無視する
-pub fn build_lyrics_model(lyrics: &[Lyric], length: u64) -> NoctaliaLyricsModelRoot {
+pub fn build_lyrics_model_lyrics_only(lyrics: &[Lyric], length: u64) -> NoctaliaLyricsModelRoot {
     let lyrics: Vec<&Lyric> = lyrics.iter().filter(|v| v.time <= length).collect();
     let lines = lyrics
         .iter()
@@ -79,24 +147,18 @@ pub fn build_lyrics_model(lyrics: &[Lyric], length: u64) -> NoctaliaLyricsModelR
         })
         .collect();
 
-    NoctaliaLyricsModelRoot { lines }
+    NoctaliaLyricsModelRoot {
+        lines: Some(lines),
+        ..Default::default()
+    }
 }
 
-pub async fn clear_lyrics() {
-    tracing::debug!("noctalia msg plugin h465855hgg/lyrics:service all clear");
-
-    let _ = Command::new("noctalia")
-        .args(["msg", "plugin", "h465855hgg/lyrics:service", "all", "clear"])
-        .status()
-        .await;
-}
-
-/// 歌詞モデル全体をNoctaliaプラグインへ`push-json`で送信する。
-pub async fn push_lyrics_model(model: &NoctaliaLyricsModelRoot) {
+/// 歌詞モデル全体をNoctaliaプラグインへ`push-state`で送信する。
+pub async fn push_state(model: &NoctaliaLyricsModelRoot) {
     let json = serde_json::to_string(model).unwrap();
 
     tracing::debug!(
-        "noctalia msg plugin h465855hgg/lyrics:service all push-json '{}'",
+        "noctalia msg plugin h465855hgg/lyrics:service all push-state '{}'",
         json
     );
 
@@ -106,9 +168,11 @@ pub async fn push_lyrics_model(model: &NoctaliaLyricsModelRoot) {
             "plugin",
             "h465855hgg/lyrics:service",
             "all",
-            "push-json",
+            "push-state",
             json.as_str(),
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .await;
 }
@@ -193,12 +257,13 @@ pub fn write_current_state(state: &NoctaliaLyricsState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_lyrics_model, build_state};
+    use super::{build_lyrics_model_lyrics_only, build_state};
     use crate::lyrics::Lyric;
     use crate::mpris::{MPRISData, MPRISStatus};
 
     fn mpris(position: u64) -> MPRISData {
         MPRISData {
+            player: "exsample".to_string(),
             status: MPRISStatus::Playing,
             position,
             title: "Title".to_string(),
@@ -209,7 +274,7 @@ mod tests {
 
     #[test]
     fn model_omits_lines_after_track_end() {
-        let model = build_lyrics_model(
+        let model = build_lyrics_model_lyrics_only(
             &[
                 Lyric {
                     time: 1_000,
@@ -223,8 +288,9 @@ mod tests {
             10_000,
         );
 
-        assert_eq!(model.lines.len(), 1);
-        assert_eq!(model.lines[0].duration, Some(9_000));
+        let lines = model.lines.as_ref().unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].duration, Some(9_000));
     }
 
     #[test]

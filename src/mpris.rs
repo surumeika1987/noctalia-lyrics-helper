@@ -13,6 +13,7 @@ pub enum MPRISStatus {
 /// `playerctl`から取得したプレイヤーの状態
 #[derive(Clone, Debug)]
 pub struct MPRISData {
+    pub player: String,
     pub status: MPRISStatus,
     pub position: u64,
     pub title: String,
@@ -75,6 +76,7 @@ pub async fn get_player_status(priority_player: &str) -> Result<Option<MPRISData
     let length: u64 = fields.next().unwrap_or_default().parse().unwrap_or(0);
 
     let mpris = MPRISData {
+        player,
         status,
         position: position / 1000,
         title,
