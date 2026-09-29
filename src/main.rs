@@ -71,6 +71,7 @@ fn resolve_lyrics(
 async fn daemon(adjust_ms: i64, priority_player: &str) -> Result<()> {
     let mut lyrics_dict: HashMap<String, Option<Vec<Lyric>>> = HashMap::new();
     let mut prev_song_key = String::new();
+    let mut prev_status = MPRISStatus::Paused;
 
     cache::init_cache_dir();
 
@@ -92,13 +93,16 @@ async fn daemon(adjust_ms: i64, priority_player: &str) -> Result<()> {
         let lyrics = resolve_lyrics(&mut lyrics_dict, &song_key, &mpris);
 
         if let Some(lyrics) = &lyrics {
-            // 曲が切り替わった直後だけ、モデル全体をNoctaliaプラグインへ再送信する
-            if prev_song_key != song_key {
+            // 曲が切り替わった直後と再生状態に切り替わった直後に、モデル全体をNoctaliaプラグインへ再送信する
+            if prev_song_key != song_key
+                || (prev_status == MPRISStatus::Paused && mpris.status == MPRISStatus::Playing)
+            {
                 let model = noctalia::build_lyrics_model(lyrics, &mpris);
                 // 非同期で送信する
                 tokio::spawn(push_info_to_noctalia(model));
             }
             prev_song_key = song_key.clone();
+            prev_status = mpris.status;
         }
 
         let state = noctalia::build_state(&mpris, lyrics.as_deref(), adjust_ms);

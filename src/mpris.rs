@@ -4,7 +4,7 @@ use anyhow::Result;
 use tokio::process::Command;
 
 /// 再生状態
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum MPRISStatus {
     Playing,
     Paused,
