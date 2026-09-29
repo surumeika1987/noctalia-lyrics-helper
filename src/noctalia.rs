@@ -13,6 +13,8 @@ use crate::cache::CACHE_DIR;
 use crate::lyrics::Lyric;
 use crate::mpris::{MPRISData, MPRISStatus};
 
+const MICROSECONDS_PER_MILLISECOND: u64 = 1_000;
+
 /// `current.json`として書き出す、現在表示用の歌詞状態
 #[derive(Debug, Serialize)]
 pub struct NoctaliaLyricsState {
@@ -44,7 +46,7 @@ pub struct NoctaliaLyricsModelTrack {
     pub media_url: String,
 }
 
-/// Noctaliaプラグインへpush-jsonで送る歌詞モデルの1行
+/// Noctaliaプラグインへpush-stateで送る歌詞モデルの1行
 #[derive(Debug, Serialize)]
 pub struct NoctaliaLyricsModelLine {
     pub time: u64,
@@ -59,8 +61,8 @@ pub struct NoctaliaLyricsModelLine {
     pub chars: Option<Vec<u64>>,
 }
 
-/// Noctaliaプラグインへpush-jsonで送る歌詞モデル全体
-#[derive(Default, Debug, Serialize)]
+/// Noctaliaプラグインへpush-stateで送るモデル全体
+#[derive(Debug, Serialize)]
 pub struct NoctaliaLyricsModelRoot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub track: Option<NoctaliaLyricsModelTrack>,
@@ -82,42 +84,38 @@ fn status_str(status: MPRISStatus) -> String {
     }
 }
 
-/// 全ての情報を持つモデルを構築する
-pub fn build_lyrics_model(lyrics: &[Lyric], mpris: &MPRISData) -> NoctaliaLyricsModelRoot {
-    let mpris_only = build_lyrics_model_mpris_only(mpris);
-    let lyrics_only = build_lyrics_model_lyrics_only(lyrics, mpris.length);
-    NoctaliaLyricsModelRoot {
-        lines: lyrics_only.lines,
-        ..mpris_only
+/// Noctaliaのトラック状態と再生フラグを返す。
+fn playback_state(status: MPRISStatus) -> (&'static str, bool) {
+    match status {
+        MPRISStatus::Playing => ("playing", true),
+        MPRISStatus::Paused => ("paused", false),
     }
 }
 
-/// MPRISの情報からNoctaliaプラグインへpushする歌詞以外のモデルを構築する。
-pub fn build_lyrics_model_mpris_only(mpris: &MPRISData) -> NoctaliaLyricsModelRoot {
+/// ミリ秒をNoctalia APIで使うマイクロ秒へ変換する。
+fn to_microseconds(milliseconds: u64) -> u64 {
+    milliseconds.saturating_mul(MICROSECONDS_PER_MILLISECOND)
+}
+
+/// MPRIS情報と歌詞からNoctaliaプラグインへ送信するモデルを構築する。
+pub fn build_lyrics_model(lyrics: &[Lyric], mpris: &MPRISData) -> NoctaliaLyricsModelRoot {
+    let (status, playing) = playback_state(mpris.status);
+
     NoctaliaLyricsModelRoot {
         track: Some(NoctaliaLyricsModelTrack {
             title: mpris.title.clone(),
             artist: mpris.artist.clone(),
             album: String::new(),
-            status: match mpris.status {
-                MPRISStatus::Playing => String::from("playing"),
-                MPRISStatus::Paused => String::from("paused"),
-            },
-            // ms -> us
-            position: mpris.position * 1000,
-            // ms -> us
-            duration: mpris.length * 1000,
+            status: status.to_string(),
+            position: to_microseconds(mpris.position),
+            duration: to_microseconds(mpris.length),
             player_instance: mpris.player.clone(),
             track_id: String::new(),
             media_url: String::new(),
         }),
-        lines: None,
-        // ms -> us
-        position: Some(mpris.position * 1000),
-        playing: Some(match mpris.status {
-            MPRISStatus::Playing => true,
-            MPRISStatus::Paused => false,
-        }),
+        lines: Some(build_lyrics_lines(lyrics, mpris.length)),
+        position: Some(to_microseconds(mpris.position)),
+        playing: Some(playing),
         cover: Some(String::new()),
     }
 }
@@ -125,9 +123,9 @@ pub fn build_lyrics_model_mpris_only(mpris: &MPRISData) -> NoctaliaLyricsModelRo
 /// 歌詞行のリストから、Noctaliaプラグインへpushする歌詞モデルを構築する。
 /// 各行の`duration`は次の行の開始時刻との差分（最終行のみ曲の長さとの差分）とする。
 /// MPRISの再生時間より長い歌詞データは該当部分を無視する
-pub fn build_lyrics_model_lyrics_only(lyrics: &[Lyric], length: u64) -> NoctaliaLyricsModelRoot {
+fn build_lyrics_lines(lyrics: &[Lyric], length: u64) -> Vec<NoctaliaLyricsModelLine> {
     let lyrics: Vec<&Lyric> = lyrics.iter().filter(|v| v.time <= length).collect();
-    let lines = lyrics
+    lyrics
         .iter()
         .enumerate()
         .map(|(i, lyric)| NoctaliaLyricsModelLine {
@@ -145,12 +143,7 @@ pub fn build_lyrics_model_lyrics_only(lyrics: &[Lyric], length: u64) -> Noctalia
             romanization: None,
             chars: None,
         })
-        .collect();
-
-    NoctaliaLyricsModelRoot {
-        lines: Some(lines),
-        ..Default::default()
-    }
+        .collect()
 }
 
 /// 歌詞モデル全体をNoctaliaプラグインへ`push-state`で送信する。
@@ -257,7 +250,7 @@ pub fn write_current_state(state: &NoctaliaLyricsState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_lyrics_model_lyrics_only, build_state};
+    use super::{build_lyrics_model, build_state};
     use crate::lyrics::Lyric;
     use crate::mpris::{MPRISData, MPRISStatus};
 
@@ -274,7 +267,7 @@ mod tests {
 
     #[test]
     fn model_omits_lines_after_track_end() {
-        let model = build_lyrics_model_lyrics_only(
+        let model = build_lyrics_model(
             &[
                 Lyric {
                     time: 1_000,
@@ -285,7 +278,7 @@ mod tests {
                     text: "two".into(),
                 },
             ],
-            10_000,
+            &mpris(0),
         );
 
         let lines = model.lines.as_ref().unwrap();
