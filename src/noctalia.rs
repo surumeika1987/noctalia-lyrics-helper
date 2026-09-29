@@ -58,20 +58,20 @@ fn status_str(status: MPRISStatus) -> String {
 /// 各行の`duration`は次の行の開始時刻との差分（最終行のみ曲の長さとの差分）とする。
 /// MPRISの再生時間より長い歌詞データは該当部分を無視する
 pub fn build_lyrics_model(lyrics: &[Lyric], length: u64) -> NoctaliaLyricsModelRoot {
-    let lines: Vec<NoctaliaLyricsModelLine> = lyrics
+    let lyrics: Vec<&Lyric> = lyrics.iter().filter(|v| v.time <= length).collect();
+    let lines = lyrics
         .iter()
-        .filter(|v| v.time <= length)
         .enumerate()
-        .map(|(i, v)| NoctaliaLyricsModelLine {
-            time: v.time,
+        .map(|(i, lyric)| NoctaliaLyricsModelLine {
+            time: lyric.time,
             duration: Some(match lyrics.get(i + 1) {
-                Some(next_lyric) => next_lyric.time - v.time,
-                None => length - v.time,
+                Some(next_lyric) => next_lyric.time.saturating_sub(lyric.time),
+                None => length.saturating_sub(lyric.time),
             }),
-            text: if v.text.is_empty() {
+            text: if lyric.text.is_empty() {
                 String::from("...")
             } else {
-                v.text.clone()
+                lyric.text.clone()
             },
             translation: None,
             romanization: None,
@@ -136,12 +136,7 @@ pub fn build_state(
         return empty_state;
     };
 
-    let default_lyric = Lyric::default();
-    let pos = if 0 <= mpris.position as i64 + adjust_ms {
-        (mpris.position as i64 + adjust_ms) as u64
-    } else {
-        0
-    };
+    let pos = mpris.position.saturating_add_signed(adjust_ms);
 
     // 現在位置以前の歌詞行のうち、最後に該当する行（アクティブな行）のインデックスを求める
     let mut active_index: i64 = -1;
@@ -153,44 +148,38 @@ pub fn build_state(
         }
     }
 
+    let current_index = usize::try_from(active_index).ok();
+    let current = current_index
+        .and_then(|index| lyrics.get(index))
+        .map(|lyric| lyric.text.clone())
+        .unwrap_or_default();
+    let prev = current_index
+        .and_then(|index| index.checked_sub(1))
+        .and_then(|index| lyrics.get(index))
+        .map(|lyric| lyric.text.clone())
+        .unwrap_or_default();
+    let prev_prev = current_index
+        .and_then(|index| index.checked_sub(2))
+        .and_then(|index| lyrics.get(index))
+        .map(|lyric| lyric.text.clone())
+        .unwrap_or_default();
+    let next = current_index
+        .and_then(|index| index.checked_add(1))
+        .and_then(|index| lyrics.get(index))
+        .map(|lyric| lyric.text.clone())
+        .unwrap_or_default();
+    let next_next = current_index
+        .and_then(|index| index.checked_add(2))
+        .and_then(|index| lyrics.get(index))
+        .map(|lyric| lyric.text.clone())
+        .unwrap_or_default();
+
     NoctaliaLyricsState {
-        prev_prev: if 2 <= active_index {
-            lyrics
-                .get((active_index - 2) as usize)
-                .unwrap_or(&default_lyric)
-                .text
-                .clone()
-        } else {
-            String::new()
-        },
-        prev: if 1 <= active_index {
-            lyrics
-                .get((active_index - 1) as usize)
-                .unwrap_or(&default_lyric)
-                .text
-                .clone()
-        } else {
-            String::new()
-        },
-        current: if 0 <= active_index {
-            lyrics
-                .get(active_index as usize)
-                .unwrap_or(&default_lyric)
-                .text
-                .clone()
-        } else {
-            String::new()
-        },
-        next: lyrics
-            .get((active_index + 1) as usize)
-            .unwrap_or(&default_lyric)
-            .text
-            .clone(),
-        next_next: lyrics
-            .get((active_index + 2) as usize)
-            .unwrap_or(&default_lyric)
-            .text
-            .clone(),
+        prev_prev,
+        prev,
+        current,
+        next,
+        next_next,
         ..empty_state
     }
 }
@@ -200,4 +189,64 @@ pub fn write_current_state(state: &NoctaliaLyricsState) {
     let json = serde_json::to_string(state).unwrap();
     let noctalia_state_file = CACHE_DIR.join("current.json");
     std::fs::write(noctalia_state_file, json).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_lyrics_model, build_state};
+    use crate::lyrics::Lyric;
+    use crate::mpris::{MPRISData, MPRISStatus};
+
+    fn mpris(position: u64) -> MPRISData {
+        MPRISData {
+            status: MPRISStatus::Playing,
+            position,
+            title: "Title".to_string(),
+            artist: "Artist".to_string(),
+            length: 10_000,
+        }
+    }
+
+    #[test]
+    fn model_omits_lines_after_track_end() {
+        let model = build_lyrics_model(
+            &[
+                Lyric {
+                    time: 1_000,
+                    text: "one".into(),
+                },
+                Lyric {
+                    time: 12_000,
+                    text: "two".into(),
+                },
+            ],
+            10_000,
+        );
+
+        assert_eq!(model.lines.len(), 1);
+        assert_eq!(model.lines[0].duration, Some(9_000));
+    }
+
+    #[test]
+    fn state_exposes_surrounding_lines() {
+        let lyrics = vec![
+            Lyric {
+                time: 1_000,
+                text: "one".into(),
+            },
+            Lyric {
+                time: 2_000,
+                text: "two".into(),
+            },
+            Lyric {
+                time: 3_000,
+                text: "three".into(),
+            },
+        ];
+        let state = build_state(&mpris(2_500), Some(&lyrics), 0);
+
+        assert_eq!(state.prev, "one");
+        assert_eq!(state.current, "two");
+        assert_eq!(state.next, "three");
+    }
 }

@@ -6,7 +6,6 @@ version = "0.1.0"
 authors = ["surumeika1987"]
 edition = "2024"
 license = "MIT"
-license-file = "LICENSE"
 readme = "README.md"
 
 [dependencies]

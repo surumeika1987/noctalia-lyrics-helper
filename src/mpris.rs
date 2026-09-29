@@ -18,7 +18,6 @@ pub struct MPRISData {
     pub title: String,
     pub artist: String,
     pub length: u64,
-    pub art_url: String,
 }
 
 /// メタデータの各フィールドを区切るのに使う文字。
@@ -37,18 +36,14 @@ pub async fn get_player_status(priority_player: &str) -> Result<Option<MPRISData
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let players: Vec<&str> = stdout.trim().lines().collect();
-    let mut player: Option<String> = None;
-
-    // "priority_player"を優先
-    if players.contains(&priority_player) {
-        player = Some(priority_player.to_string());
-    } else if 0 < players.len() {
-        player = Some(players.get(0).unwrap().to_string());
-    }
-
-    if player == None {
+    // "priority_player"を優先し、無ければ先頭のプレイヤーを使う
+    let Some(player) = players
+        .contains(&priority_player)
+        .then(|| priority_player.to_string())
+        .or_else(|| players.first().map(|player| (*player).to_string()))
+    else {
         return Ok(None);
-    }
+    };
 
     // タイトルやアーティスト名に " や \ が含まれていても壊れないよう、
     // JSON形式ではなく制御文字区切りでフィールドをそのまま取り出す
@@ -58,18 +53,11 @@ pub async fn get_player_status(priority_player: &str) -> Result<Option<MPRISData
         "{{title}}",
         "{{artist}}",
         "{{mpris:length}}",
-        "{{mpris:artUrl}}",
     ]
     .join(FIELD_SEPARATOR);
 
     let output = Command::new("playerctl")
-        .args([
-            "-p",
-            player.unwrap().as_str(),
-            "metadata",
-            "--format",
-            &format,
-        ])
+        .args(["-p", player.as_str(), "metadata", "--format", &format])
         .output()
         .await
         .unwrap();
@@ -85,7 +73,6 @@ pub async fn get_player_status(priority_player: &str) -> Result<Option<MPRISData
     let title = fields.next().unwrap_or_default().to_string();
     let artist = fields.next().unwrap_or_default().to_string();
     let length: u64 = fields.next().unwrap_or_default().parse().unwrap_or(0);
-    let art_url = fields.next().unwrap_or_default().to_string();
 
     let mpris = MPRISData {
         status,
@@ -93,7 +80,6 @@ pub async fn get_player_status(priority_player: &str) -> Result<Option<MPRISData
         title,
         artist,
         length: length / 1000,
-        art_url,
     };
     Ok(Some(mpris))
 }

@@ -5,6 +5,7 @@
 //! `parse_and_cache` に、`fallback`内の候補選択ロジックは
 //! `select_best_match` にそれぞれ切り出した。
 
+use std::future::Future;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,8 @@ use tokio::time::sleep;
 
 use crate::cache;
 use crate::lrclib::{LRCLIBAPI, LRCLIBError, LRCLIBResponse};
+
+const MAX_RETRIES: usize = 5;
 
 /// パース済みの1行分の歌詞（時刻[ms]とテキスト）
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -78,7 +81,7 @@ pub fn parse_lrc(lrc_text: Vec<&str>) -> Vec<Lyric> {
         .into_iter()
         .filter_map(parse_lrc_line)
         .filter(|lyric| {
-            let is_in_order = last_time.map_or(true, |prev| lyric.time >= prev);
+            let is_in_order = last_time.is_none_or(|prev| lyric.time >= prev);
             if is_in_order {
                 last_time = Some(lyric.time);
             }
@@ -117,6 +120,32 @@ pub fn get_lyrics_local(title: &str, artist: &str) -> Option<Vec<Lyric>> {
     cache::load_lyrics(&hash)
 }
 
+/// 過負荷またはタイムアウト時だけ、一定回数の待機・再試行を行う。
+async fn request_with_retry<T, F, Fut>(mut request: F) -> Result<T, LRCLIBError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, LRCLIBError>>,
+{
+    for retry in 0..=MAX_RETRIES {
+        match request().await {
+            Ok(response) => return Ok(response),
+            Err(LRCLIBError::Overload) => tracing::info!("Server overloaded. Retrying..."),
+            Err(LRCLIBError::Request(error)) if error.is_timeout() => {
+                tracing::info!("Connection timeout. Retrying...")
+            }
+            Err(error) => return Err(error),
+        }
+
+        if retry == MAX_RETRIES {
+            tracing::info!("Retry limit reached.");
+            return Err(LRCLIBError::Overload);
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+
+    unreachable!("the retry loop always returns")
+}
+
 /// 曲名・アーティスト名（・長さ）でLRCLIBへ問い合わせ、歌詞を取得する。
 /// 該当が無い、または同期歌詞が無い場合は検索によるフォールバックを行う。
 pub async fn get_lyrics_lrclib(
@@ -127,58 +156,23 @@ pub async fn get_lyrics_lrclib(
     let key = cache::song_key(&artist, &title);
     let hash = cache::song_key_hash(&key);
 
-    let mut retry = 0;
-
-    loop {
-        let response = LRCLIBAPI::get_lyrics_with_a_tracks_signature(
+    let response = request_with_retry(|| {
+        LRCLIBAPI::get_lyrics_with_a_tracks_signature(
             title.clone(),
             artist.clone(),
             None,
             length.map(|len| (len / 1000) as u16),
         )
-        .await;
+    })
+    .await;
 
-        match response {
-            Ok(res) => match parse_and_cache(&res, &hash, &key) {
-                Some(lyrics) => return Some(lyrics),
-                None => return search_lyrics_lrclib(title, artist, length).await,
-            },
-            Err(err) => {
-                match err {
-                    LRCLIBError::NotFound => {
-                        return search_lyrics_lrclib(title, artist, length).await;
-                    }
-                    LRCLIBError::TooManyRequest => return None,
-                    LRCLIBError::Overload => {
-                        // 5回失敗で終了
-                        if 5 < retry {
-                            tracing::info!("Retry limit reached.");
-                            return None;
-                        }
-                        tracing::info!("Server Overloaded. Rtrying...");
-                        // 少し待って再取得
-                        sleep(Duration::from_millis(1000)).await;
-                        retry += 1;
-                    }
-                    LRCLIBError::Request(req_err) => {
-                        if req_err.is_timeout() {
-                            // 5回失敗で終了
-                            if 5 < retry {
-                                tracing::info!("Retry limit reached.");
-                                return None;
-                            }
-                            tracing::info!("Connection timeout. Rtrying...");
-                            // 少し待って再取得
-                            sleep(Duration::from_millis(1000)).await;
-                            retry += 1;
-                        } else {
-                            return None;
-                        }
-                    }
-                    _ => return None,
-                };
-            }
-        }
+    match response {
+        Ok(res) => match parse_and_cache(&res, &hash, &key) {
+            Some(lyrics) => Some(lyrics),
+            None => search_lyrics_lrclib(title, artist, length).await,
+        },
+        Err(LRCLIBError::NotFound) => search_lyrics_lrclib(title, artist, length).await,
+        Err(_) => None,
     }
 }
 
@@ -194,59 +188,21 @@ pub async fn search_lyrics_lrclib(
 
     tracing::info!("Fallback to search");
 
-    let mut retry = 0;
+    let responses = request_with_retry(|| LRCLIBAPI::search_lyrics(title.clone()))
+        .await
+        .ok()?;
+    let filtered_responses: Vec<LRCLIBResponse> = responses
+        .into_iter()
+        .filter(|response| response.syncd_lyrics.is_some())
+        .collect();
 
-    loop {
-        let responses = LRCLIBAPI::search_lyrics(title.clone()).await;
-
-        match responses {
-            Ok(ress) => {
-                let filtered_ress: Vec<LRCLIBResponse> = ress
-                    .into_iter()
-                    .filter(|v| v.syncd_lyrics != None)
-                    .collect();
-                if filtered_ress.len() == 0 {
-                    tracing::info!("Can't find syncd lyrics.");
-                    return None;
-                }
-                let select_lyrics_index = select_best_match(&filtered_ress, length)?;
-                let res = filtered_ress.get(select_lyrics_index).unwrap();
-                return parse_and_cache(res, &hash, &key);
-            }
-            Err(err) => {
-                match err {
-                    LRCLIBError::TooManyRequest => return None,
-                    LRCLIBError::Overload => {
-                        // 5回失敗で終了
-                        if 5 < retry {
-                            tracing::info!("Retry limit reached.");
-                            return None;
-                        }
-                        tracing::info!("Server Overloaded. Rtrying...");
-                        // 少し待って再取得
-                        sleep(Duration::from_millis(1000)).await;
-                        retry += 1;
-                    }
-                    LRCLIBError::Request(req_err) => {
-                        if req_err.is_timeout() {
-                            // 5回失敗で終了
-                            if 5 < retry {
-                                tracing::info!("Retry limit reached.");
-                                return None;
-                            }
-                            tracing::info!("Connection timeout. Rtrying...");
-                            // 少し待って再取得
-                            sleep(Duration::from_millis(1000)).await;
-                            retry += 1;
-                        } else {
-                            return None;
-                        }
-                    }
-                    _ => return None,
-                };
-            }
-        }
+    if filtered_responses.is_empty() {
+        tracing::info!("Can't find syncd lyrics.");
+        return None;
     }
+
+    let selected_index = select_best_match(&filtered_responses, length)?;
+    parse_and_cache(&filtered_responses[selected_index], &hash, &key)
 }
 
 /// 検索結果の中から採用する候補のインデックスを選ぶ。
@@ -283,5 +239,46 @@ pub async fn get_lyrics_lrclib_id(title: String, artist: String, id: u64) -> Opt
     match response {
         Ok(res) => parse_and_cache(&res, &hash, &key),
         Err(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_lrc, select_best_match};
+    use crate::lrclib::LRCLIBResponse;
+
+    #[test]
+    fn parse_lrc_skips_metadata_invalid_lines_and_out_of_order_timestamps() {
+        let lyrics = parse_lrc(vec![
+            "[ar:Artist]",
+            "[00:01.25]first",
+            "invalid",
+            "[00:00.50]out of order",
+            "[01:02]last",
+        ]);
+
+        assert_eq!(lyrics.len(), 2);
+        assert_eq!(lyrics[0].time, 1_250);
+        assert_eq!(lyrics[0].text, "first");
+        assert_eq!(lyrics[1].time, 62_000);
+    }
+
+    #[test]
+    fn selects_the_duration_closest_to_the_current_track() {
+        let responses = [
+            LRCLIBResponse {
+                id: 1,
+                duration: 180,
+                syncd_lyrics: Some(vec![]),
+            },
+            LRCLIBResponse {
+                id: 2,
+                duration: 200,
+                syncd_lyrics: Some(vec![]),
+            },
+        ];
+
+        assert_eq!(select_best_match(&responses, Some(195_000)), Some(1));
+        assert_eq!(select_best_match(&responses, None), Some(0));
     }
 }

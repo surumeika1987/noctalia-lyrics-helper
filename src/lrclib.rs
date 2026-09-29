@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 /// LRCLIB APIのベースURL
@@ -28,15 +29,10 @@ const TIMEOUT_SEC: u64 = 5;
 #[derive(Debug, Deserialize)]
 pub struct LRCLIBResponse {
     pub id: u64,
-    pub name: String,
-    pub track_name: String,
-    pub artist_name: String,
-    pub album_name: String,
+    #[serde(deserialize_with = "deserialize_duration")]
     pub duration: u64,
-    pub instrumental: bool,
-    pub plain_lyrics: Vec<String>,
+    #[serde(rename = "syncedLyrics", deserialize_with = "deserialize_lyrics")]
     pub syncd_lyrics: Option<Vec<String>>,
-    pub lyricsfile: String,
 }
 
 /// LRCLIB API呼び出しで発生しうるエラー
@@ -52,12 +48,11 @@ pub enum LRCLIBError {
     ResponseNotOK(reqwest::StatusCode),
     #[error("HTTP request failed: {0}")]
     Request(#[from] reqwest::Error),
-    #[error("JSON parsing failed: {0}")]
-    Json(#[from] serde_json::Error),
 }
 
 #[derive(Clone, Default, Debug)]
-pub struct LRCLIBAPI {}
+#[allow(clippy::upper_case_acronyms)]
+pub struct LRCLIBAPI;
 
 impl LRCLIBAPI {
     /// 曲名・アーティスト名（任意でアルバム名・長さ）をもとにLRCLIBへ歌詞を問い合わせる。
@@ -87,8 +82,7 @@ impl LRCLIBAPI {
         );
 
         // このエンドポイントは404を「歌詞が見つからない」として扱う
-        let json = request_json(&url, true).await?;
-        Ok(response_from_json(&json))
+        request_json(&url, true).await
     }
 
     /// LRCLIBの楽曲ID指定で歌詞を取得する。
@@ -96,13 +90,12 @@ impl LRCLIBAPI {
         let url = format!("{}/api/get/{}", LRCLIB_URL, id);
 
         // このエンドポイントも404を「歌詞が見つからない」として扱う
-        let json = request_json(&url, true).await?;
-        Ok(response_from_json(&json))
+        request_json(&url, true).await
     }
 
     /// クエリ文字列でLRCLIBを検索し、候補となる歌詞情報の一覧を取得する。
     pub async fn search_lyrics(query: String) -> Result<Vec<LRCLIBResponse>, LRCLIBError> {
-        let mut query_params: Vec<(&str, String)> = vec![("q", query)];
+        let query_params: Vec<(&str, String)> = vec![("q", query)];
         let url = format!(
             "{}/api/search?{}",
             LRCLIB_URL,
@@ -110,16 +103,7 @@ impl LRCLIBAPI {
         );
 
         // 検索APIには「404=見つからない」の特別扱いは無い（元コードと同様）
-        let json = request_json(&url, false).await?;
-
-        let mut response_array: Vec<LRCLIBResponse> = Vec::new();
-        if let Some(array) = json.as_array() {
-            for lyrics_raw in array {
-                response_array.push(response_from_json(lyrics_raw));
-            }
-        }
-
-        Ok(response_array)
+        request_json(&url, false).await
     }
 }
 
@@ -136,10 +120,10 @@ fn build_query_string(query_params: Vec<(&str, String)>) -> String {
 ///
 /// `treat_404_as_not_found` が`true`のエンドポイントのみ、404を
 /// `LRCLIBError::NotFound` として扱う（元の各関数の挙動差をそのまま維持するため）。
-async fn request_json(
+async fn request_json<T: DeserializeOwned>(
     url: &str,
     treat_404_as_not_found: bool,
-) -> Result<serde_json::Value, LRCLIBError> {
+) -> Result<T, LRCLIBError> {
     tracing::debug!("USER_AGENT: {}", USER_AGENT);
     tracing::info!("Get: {}", url);
 
@@ -173,26 +157,19 @@ async fn request_json(
     Ok(response.json().await?)
 }
 
-/// `serde_json::Value` を `LRCLIBResponse` へマッピングする。
-///
-/// 元コードでは3つのAPI呼び出し（署名検索・ID指定取得・検索）それぞれで
-/// 全く同じマッピング処理が重複していたため、ここに集約した。
-fn response_from_json(json: &serde_json::Value) -> LRCLIBResponse {
-    LRCLIBResponse {
-        id: json["id"].as_u64().unwrap(),
-        name: json["name"].as_str().unwrap().to_string(),
-        track_name: json["trackName"].as_str().unwrap().to_string(),
-        artist_name: json["artistName"].as_str().unwrap().to_string(),
-        album_name: json["albumName"].as_str().unwrap().to_string(),
-        duration: json["duration"].as_f64().unwrap() as u64,
-        instrumental: json["instrumental"].as_bool().unwrap(),
-        plain_lyrics: json["plainLyrics"]
-            .as_str()
-            .map(|lyrics| lyrics.lines().map(str::to_string).collect())
-            .unwrap_or_default(),
-        syncd_lyrics: json["syncedLyrics"]
-            .as_str()
-            .map(|lyrics| lyrics.lines().map(str::to_string).collect()),
-        lyricsfile: json["lyricsfile"].as_str().unwrap().to_string(),
-    }
+/// 改行区切りの歌詞文字列を行ごとの配列へ変換する。
+fn deserialize_lyrics<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
+        .map(|lyrics| lyrics.map(|text| text.lines().map(str::to_owned).collect()))
+}
+
+/// APIが小数として返すことがある曲の長さを、秒単位の整数へ正規化する。
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    f64::deserialize(deserializer).map(|duration| duration as u64)
 }

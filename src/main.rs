@@ -137,13 +137,13 @@ async fn main() -> Result<()> {
 
         match arg.as_str() {
             "-d" => {
-                if mode != None {
+                if mode.is_some() {
                     tracing::error!("-g and -d can be used ONLY ONCE in total.")
                 }
                 mode = Some(Mode::Daemon);
             }
             "-g" => {
-                if mode != None {
+                if mode.is_some() {
                     tracing::error!("-g and -d can be used ONLY ONCE in total.")
                 }
                 mode = Some(Mode::Get);
@@ -158,12 +158,12 @@ async fn main() -> Result<()> {
         }
     }
 
-    if mode == None {
+    if mode.is_none() {
         tracing::error!("Need args -d or -g <LRCLIB_ID>");
         return Ok(());
     }
 
-    if let Some(option) = current_option {
+    if current_option.is_some() {
         tracing::error!("Option need more args.");
         return Ok(());
     }
@@ -183,7 +183,7 @@ async fn main() -> Result<()> {
             .await
         }
         Mode::Get => {
-            if option_arg.get(&ProgramOption::Get) == None {
+            if !option_arg.contains_key(&ProgramOption::Get) {
                 tracing::error!("Get need more arg. ex -g <LRCLIB_ID>");
                 return Ok(());
             }
