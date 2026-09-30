@@ -93,10 +93,8 @@ async fn daemon(adjust_ms: i64, priority_player: &str) -> Result<()> {
         let lyrics = resolve_lyrics(&mut lyrics_dict, &song_key, &mpris);
 
         if let Some(lyrics) = &lyrics {
-            // 曲が切り替わった直後と再生状態に切り替わった直後に、モデル全体をNoctaliaプラグインへ再送信する
-            if prev_song_key != song_key
-                || (prev_status == MPRISStatus::Paused && mpris.status == MPRISStatus::Playing)
-            {
+            // 曲が切り替わった直後と再生状態が切り替わった直後に、モデル全体をNoctaliaプラグインへ再送信する
+            if prev_song_key != song_key || prev_status != mpris.status {
                 let model = noctalia::build_lyrics_model(lyrics, &mpris);
                 // 非同期で送信する
                 tokio::spawn(push_info_to_noctalia(model));
