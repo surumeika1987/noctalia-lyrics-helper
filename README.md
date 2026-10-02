@@ -30,7 +30,7 @@ target/release/noctalia-lyrics
 `noctalia-lyrics`には２つの機能があります
 - デーモン  
   常駐アプリとして起動します  
-  systemdに登録するなどしてください  
+  Hyprland等の起動時に起動するよう設定してください。  
   ```
   $ noctalia-lyrics -d
   ```
